@@ -9,7 +9,6 @@ This repository contains the thesis source and experiment code for **TiRA: Tiled
 ├── thesis.tex                         # LaTeX source of the thesis
 ├── thesis.pdf                         # Compiled thesis PDF
 ├── figures/                           # Figures and figure-generation scripts
-├── build/                             # Build and intermediate outputs
 └── experiment/
     ├── train.py                       # Main training and inference entry point
     ├── tira/                          # TiRA implementation
