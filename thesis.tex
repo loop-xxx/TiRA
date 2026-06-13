@@ -1,0 +1,621 @@
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs,multirow,array,tabularx}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\captionsetup[figure]{font=small,labelfont=bf}
+\captionsetup[table]{font=small,labelfont=bf}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\DeltaW}{\Delta W}
+\newcommand{\Wzero}{W_0}
+\newcommand{\rank}{\operatorname{rank}}
+
+\title{TiRA：面向高秩参数高效微调的分块秩一适配方法}
+\author{}
+\date{}
+
+\makeatletter
+\let\ps@plain\ps@empty
+\makeatother
+
+\begin{document}
+\pagestyle{empty}
+\maketitle
+
+\begin{abstract}
+预训练大语言模型（large language models, LLMs）具备强大的通用语言能力，但在复杂下游任务中仍需要进行任务特定适配。全参数微调通常需要较高的计算与存储成本；相比之下，参数高效微调（parameter-efficient fine-tuning, PEFT）方法通过仅优化少量新增参数显著降低了训练开销。作为代表性方法，LoRA 通过低秩分解实现高效适配，但其表达能力受固定秩 $r$ 的限制，在多步推理和复杂知识重组任务中可能出现秩不足问题。针对这一局限，本文提出分块化高秩适配方法 TiRA（Tiled Rank-1 Adaptation）。TiRA 将权重增量矩阵划分为 $M\times M$ 个子块，并利用 $K$ 组短向量外积沿错位块对角线进行结构化填充。在保持与 LoRA 相同可训练参数量的前提下，TiRA 可将有效秩由 $r$ 提升至 $r^2$，从而增强模型对复杂任务的适配能力。TiRA 仍然保持与原始权重可合并的特性，因此在推理阶段不引入额外开销。本文在常识推理、开放域对话生成和数学推理三类任务上对 TiRA 进行了系统评估。实验结果表明，在同等可训练参数预算设置下，TiRA 在 Llama-2-7B 与 Llama-3-8B 等模型上取得优于 LoRA、DoRA、MoRA 和 HiRA 等代表性 PEFT 方法的性能。特别是在 Llama-3-8B 的 GSM8K 数学推理任务上，TiRA 达到 $73.01\%$ 的准确率，较 LoRA 提升 $7.12$ 个百分点，较 HiRA 提升 $2.20$ 个百分点。进一步的消融实验表明，分块粒度 $M$ 对 TiRA 的性能具有重要影响，且较大规模模型通常能够更充分地受益于高秩适配。上述结果验证了结构化分块高秩更新的有效性，为大语言模型在复杂下游任务中的高效适配提供了一种新的技术路径。
+\end{abstract}
+
+\section{引言}
+
+预训练大语言模型具备强大的通用语言能力，但其原始参数通常难以直接适配特定下游任务。全参数微调可以有效提升任务性能，却面临高昂的显存、计算和存储成本。为缓解这一问题，参数高效微调方法通过冻结模型主体参数、仅优化少量新增参数实现任务适配。现有 PEFT 方法大体可分为提示类方法和基于权重更新的方法。提示类方法通过引入可训练软提示或虚拟令牌调控模型行为\cite{li2021prefix,lester2021power,xiao2022ptuning}；以 LoRA\cite{hu2022lora} 为代表的基于权重更新的方法则直接对网络内部线性层的权重增量进行参数化建模。与提示类方法相比，LoRA 不占用额外上下文长度，且其低秩权重增量可在推理阶段与基础权重合并，因此已成为当前 PEFT 研究中的重要范式。
+
+然而，LoRA 的核心假设是权重增量具有低秩结构。该设计适用于参数预算受限的轻量级任务适配，但在需要深度知识重组与多步推理的复杂下游任务中，固定秩 $r$ 所张成的低维更新子空间可能不足以刻画任务所需的高维权重变化，从而限制模型的适配能力。直接提高 LoRA 的秩虽然能够增强权重更新的表达能力，但也会同步增加可训练参数量、显存占用和优化成本，削弱 PEFT 方法的效率优势。因此，本文关注如下问题：在维持与 LoRA 相同可训练参数量级、并保留权重可合并特性的前提下，能否构造具有更高有效秩的权重更新形式，以增强大语言模型在复杂下游任务中的适配能力？
+
+为回答这一问题，本文提出分块化高秩适配方法 TiRA。TiRA 继承 LoRA 的旁路适配范式，但不再对整个权重增量矩阵进行全局低秩分解。具体而言，TiRA 将权重增量矩阵 $\DeltaW$ 划分为 $M\times M$ 个块网格，并将可训练参数组织为 $K$ 个低秩组。每组通过 $M$ 对短向量外积，在块网格的一条错位块对角线上生成 $M$ 个秩-1 子块，如图~\ref{fig:lora_tira} 所示。该设计使每组构成秩上限为 $M$ 的子矩阵，而 $K$ 组叠加后的增量矩阵秩上限可达 $KM$。当设置 $K=M=r$ 时，TiRA 的参数量为 $r(d_{\mathrm{out}}+d_{\mathrm{in}})$，与 LoRA 完全一致，却可将有效秩从 $r$ 提升至 $r^2$，实现同等参数预算下的平方级秩扩展。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.96\linewidth]{figures/lora_tira_architecture.pdf}
+    \caption{LoRA 与 TiRA 架构对比。LoRA 通过低秩分解 $BA$ 构造权重增量 $\Delta W$，其秩上限为 $r$；TiRA 将 $\Delta W\in\R^{d\times d}$ 划分为 $M\times M$ 的块网格，利用 $K$ 组可训练短向量通过外积生成秩-1 子块，并沿 $K$ 条错位块对角线结构化填充。其中 $W_0$ 为冻结的原始权重，$K$ 与 $M$ 为 TiRA 的核心超参数，控制参数分组与分块粒度。}
+    \label{fig:lora_tira}
+\end{figure}
+
+本文的主要贡献如下：
+\begin{enumerate}[leftmargin=2em]
+    \item 提出 TiRA，一种面向大语言模型的高秩参数高效适配方法。该方法在严格保持与 LoRA 同等参数预算的前提下，将权重增量矩阵的有效秩由 $r$ 提升至 $r^2$，显著增强模型对复杂下游任务的表达能力与适配性能。
+    \item 通过多类下游任务实验和消融分析验证 TiRA 的有效性。实验结果表明，TiRA 在保持参数高效性和无额外推理开销的同时，在常识推理、开放域对话生成和数学推理任务上均优于现有代表性 PEFT 方法。
+\end{enumerate}
+
+\section{相关工作}
+
+\subsection{LoRA 及其扩展方法}
+
+低秩适配（Low-Rank Adaptation, LoRA）是一种经典的基于权重更新的参数高效微调范式\cite{hu2022lora}。该方法冻结预训练主干网络参数，并在线性层中注入一对可训练低秩矩阵作为适配器，通过矩阵乘积 $BA$ 近似权重更新 $\DeltaW$。LoRA 的重要优势在于其与基模型权重具有良好的数学兼容性。微调完成后，低秩旁路参数可被显式折叠为权重增量，并与原始权重矩阵合并为 $W=W_0+\DeltaW$。因此，部署阶段无需保留额外旁路分支，模型前向传播形式与原始线性层保持一致，从而在推理阶段不引入额外计算延迟或显存开销。
+
+在 LoRA 基础上，后续研究从增强表达能力和改进分解策略等方向进行了扩展。DoRA\cite{liu2024dora} 将预训练权重分解为幅度和方向两个部分，并仅对方向分量采用低秩适配进行更新。MoRA\cite{jiang2024mora} 通过高秩更新增强适配表达能力，但其适配权重难以像 LoRA 一样直接合并回原始权重。HiRA\cite{huang2025hira} 利用 Hadamard 积实现高秩适配，同时保留与预训练模型合并的能力。
+
+\subsection{其他 PEFT 方法}
+
+PEFT 的另一类重要方法是基于提示的适配方法。该类方法通过在大语言模型的输入层或隐藏层中嵌入可训练虚拟令牌，并仅优化这些提示参数，而保持预训练模型主干参数冻结。代表性工作包括 Prefix Tuning\cite{li2021prefix}、Prompt Tuning\cite{lester2021power} 和 P-Tuning v2\cite{xiao2022ptuning}。其中，Prompt Tuning 在输入序列前端引入软提示以实现任务适配；Prefix Tuning 将可训练前缀注入注意力计算过程；P-Tuning v2 进一步将连续提示扩展至更深层的表示空间，从而增强对复杂任务模式的调控能力。此类方法的性能通常受提示长度、初始化方式和任务形式影响较大。与 LoRA 及其变体直接修改网络内部线性变换不同，提示类方法主要通过调整输入或中间表示空间诱导模型生成任务特定输出。
+
+\section{研究动机}
+
+\begin{figure}[H]
+    \centering
+    \begin{tikzpicture}
+    \begin{axis}[
+        width=0.88\linewidth,
+        height=0.48\linewidth,
+        xlabel={LoRA rank $r$},
+        ylabel={Validation accuracy (\%)},
+        xmin=0, xmax=136,
+        ymin=38, ymax=70,
+        xtick={8,16,32,64,128},
+        grid=both,
+        tick label style={font=\small},
+        label style={font=\small},
+        legend style={
+            at={(0.5,-0.18)},
+            anchor=north,
+            legend columns=2,
+            font=\small,
+            /tikz/every even column/.append style={column sep=0.4cm}
+        },
+    ]
+    \addplot+[blue, thick, mark=*] coordinates {
+        (8,56.80) (16,65.60) (32,67.47) (64,66.13) (128,65.07)
+    };
+    \addplot+[red, thick, mark=square*] coordinates {
+        (8,42.90) (16,42.90) (32,42.90) (64,44.50) (128,47.45)
+    };
+    \legend{Easy, Challenge}
+    \end{axis}
+    \end{tikzpicture}
+    \caption{Qwen-2-1.5B 模型在不同 LoRA 秩 $r$ 下于 GSM8K Easy 与 Challenge 子集微调后的验证准确率变化。横轴为 LoRA 秩，纵轴为验证集准确率（\%）。Easy 与 Challenge 子集按答案长度划分难度，答案越长通常对应更长的推理链和更高的认知复杂度；各子集按 $9:1$ 划分训练集与验证集。}
+    \label{fig:rank_motivation}
+\end{figure}
+
+多步数学推理任务通常要求模型进行较长链条的中间推导\cite{wei2022cot,kojima2022zero}与知识组合。为验证任务复杂度与 LoRA 秩需求之间的关系，本文在 GSM8K\cite{cobbe2021gsm8k} 上构建 Easy 与 Challenge 两个难度子集并进行秩对比实验，实验超参数见附录~\ref{app:lora_hyperparams}。结果如图~\ref{fig:rank_motivation} 所示。Easy 子集准确率在较低秩区间快速提升，由 $r=8$ 时的 $56.80\%$ 提升至 $r=32$ 时的 $67.47\%$，随后随秩进一步增大出现轻微回落（$r=128$ 时降至 $65.07\%$），呈现早期饱和与高秩冗余特征。相比之下，Challenge 子集在低秩区间提升较为有限，$r=8$、$r=16$ 与 $r=32$ 时均为 $42.90\%$，但在更高秩设置下继续上升，最终在 $r=128$ 时达到 $47.45\%$。该结果说明，任务复杂度越高，模型对权重更新表达能力的需求越强，对应所需适配秩也越高；相反，简单任务在低秩区间即可被较充分地逼近，过高的秩可能引入冗余自由度并造成性能损耗。
+
+然而，增加秩会直接扩大可训练参数量，并导致计算与存储开销上升，这与 PEFT 降低资源消耗的核心目标相矛盾。TiRA 正是为应对这一矛盾而设计：它在保持参数预算不变的同时，通过结构化分块构造获得更高的有效秩。
+
+\section{方法}
+
+\subsection{旁路适配框架}
+
+LoRA 针对神经网络中的线性变换模块实现参数高效微调。鉴于 Transformer\cite{vaswani2017attention} 已成为当前大语言模型的主流架构，其内部的 Query、Key、Value、Output 投影矩阵以及前馈网络层均为线性变换，因此这些模块构成了 LoRA 的主要应用对象。LoRA 冻结预训练网络的全部权重参数，仅在线性层旁引入低秩旁路矩阵作为可训练适配器。对于原始权重矩阵 $W\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$，LoRA 训练一对低秩矩阵 $B\in\R^{d_{\mathrm{out}}\times r}$ 与 $A\in\R^{r\times d_{\mathrm{in}}}$，并以
+\begin{equation}
+    W_{\mathrm{merged}} = W + BA
+\end{equation}
+的形式对原线性变换进行增量调整。该设计在部署阶段较为便利，微调完成后，旁路参数可通过矩阵加法与原权重合并，从而在推理阶段不引入额外计算延迟或显存开销。
+
+\subsection{TiRA 的核心思想与形式化构造}
+
+TiRA 继承 LoRA 的旁路适配框架，但通过分块化构造突破全局低秩约束。不同于 LoRA 对整个权重增量矩阵进行秩-$r$ 分解，TiRA 将增量矩阵 $\DeltaW\in\R^{d_{\mathrm{out}}\times d_{\mathrm{in}}}$ 划分为 $M\times M$ 个单元块。每个单元块的尺寸为 $n_{\mathrm{out}}\times n_{\mathrm{in}}$，其中 $n_{\mathrm{out}}=d_{\mathrm{out}}/M$，$n_{\mathrm{in}}=d_{\mathrm{in}}/M$，并为每个被使用的单元块分配独立的秩-1 适配器。
+
+具体而言，将秩-1 适配器划分为 $K$ 组。第 $k$ 组（$0\leq k<K$）包含 $M$ 对可训练短向量
+\begin{equation}
+    \{\bm{b}_{k,m},\bm{a}_{k,m}\}_{m=0}^{M-1},\quad
+    \bm{b}_{k,m}\in\R^{n_{\mathrm{out}}},\quad
+    \bm{a}_{k,m}\in\R^{n_{\mathrm{in}}}.
+\end{equation}
+每对短向量通过外积生成一个秩-1 子块：
+\begin{equation}
+    C_{k,m}=\bm{b}_{k,m}\bm{a}_{k,m}^{\top}\in\R^{n_{\mathrm{out}}\times n_{\mathrm{in}}}.
+\end{equation}
+TiRA 采用错位块对角分组策略构造完整增量矩阵。第 $k$ 组适配器占据一条错位块对角线，其中第 $m$ 个秩-1 子块放置于第 $m$ 行、第 $(m+k)\bmod M$ 列，其余块位置置零。由此可定义第 $k$ 组稀疏增量矩阵 $\Delta W_k$：
+\begin{equation}
+    [\Delta W_k]_{i,j}=
+    \begin{cases}
+        C_{k,m}, & i=m,\; j=(m+k)\bmod M,\\
+        0, & \text{otherwise}.
+    \end{cases}
+\end{equation}
+$K$ 组叠加后得到总权重增量：
+\begin{equation}
+    \DeltaW = \sum_{k=0}^{K-1}\Delta W_k.
+\end{equation}
+当 $K>M$ 时，不同组可能映射到相同的块位置，此时对应秩-1 子块在该位置进行求和累加。
+在此构造下，每个子块均由短向量外积形成。为直观说明错位块对角分组策略，附录~\ref{app:k3m3} 给出了 $K=M=3$ 时 TiRA 增量矩阵的具体构造示例。
+
+\subsection{参数量与秩分析}
+
+每组包含 $M$ 个秩-1 子块，对应 $M$ 对可训练短向量。因此，TiRA 的总参数量为
+\begin{equation}
+    \mathrm{Params}=K\times M\times(n_{\mathrm{out}}+n_{\mathrm{in}})=K(d_{\mathrm{out}}+d_{\mathrm{in}}).
+\end{equation}
+当设置 $K=M=r$ 时，TiRA 与 LoRA 的参数量完全一致，均为 $r(d_{\mathrm{out}}+d_{\mathrm{in}})$。二者的关键差异在于秩的扩展能力：每个分组独立贡献的秩上限为 $M$，而 $K$ 个分组叠加后的增量矩阵秩上限可达 $KM$。因此，当 $K=M=r$ 时，TiRA 将有效秩上限由 LoRA 的 $r$ 提升至 $r^2$，从而增强复杂任务中的知识重组与多步推理适配能力。
+
+初始化策略遵循 LoRA 的常用实践：$\bm{a}_{k,m}$ 采用 Kaiming uniform 初始化\cite{he2015rectifier}，以保证训练初期梯度流稳定；$\bm{b}_{k,m}$ 采用零初始化，使 $\DeltaW=0$ 在训练起始时成立，从而保持模型初始行为与预训练模型一致。
+
+\subsection{理论可行性与优化等价性}
+
+LoRA 的表达能力通常随秩增加而提升，但其参数量也同步线性增长。从数学形式上看，一个秩为 $K\times r$ 的 LoRA 适配模块可表示为 $K$ 个秩为 $r$ 的 LoRA 适配模块的线性叠加。基于这一观察，若为每个秩为 $r$ 的 LoRA 适配模块引入结构化稀疏掩码，使不同模块的更新空间互不重叠且相互补充，则有望在保持原秩-$r$ LoRA 模块参数预算的前提下，将等效秩扩展至原来的 $K$ 倍。
+
+具体地，设 $M=K=r$。第 $k$ 个适配模块由稀疏矩阵 $B_k\in\R^{d_{\mathrm{out}}\times M}$ 与 $A_k^{\top}\in\R^{M\times d_{\mathrm{in}}}$ 组成。其中，$B_k$ 采用固定的列分块对角结构，将输入特征投影至 $M$ 维瓶颈空间；$A_k^{\top}$ 采用循环移位结构，其非零元素位于第 $k$ 条循环移位对角线上。通过对不同 $k$ 引入互补的循环移位模式，各适配模块能够作用于不同的输出更新子空间，在保持稀疏参数预算的同时扩展整体更新的表达范围。本文将该结构称为多稀疏 LoRA 专家适配，并在附录~\ref{app:sparse_expert} 给出 $r=3$ 时的具体构造示例。
+
+TiRA 与上述多稀疏 LoRA 专家适配在优化理论层面构成参数空间的线性重参数化关系。二者参数空间维度相同、参数量相同，均为 $M(d_{\mathrm{out}}+d_{\mathrm{in}})$，且可达的增量矩阵集合完全一致：
+\begin{equation}
+    \{\Delta W_{\mathrm{block}}(\theta)\mid \theta\in\R^{M(d_{\mathrm{out}}+d_{\mathrm{in}})}\}
+    =
+    \{\Delta W_{\mathrm{expert}}(\theta)\mid \theta\in\R^{M(d_{\mathrm{out}}+d_{\mathrm{in}})}\}.
+\end{equation}
+两种参数到矩阵元素的索引规则可通过一个线性双射 $T$（置换矩阵，满足 $T^{\top}T=I$）相互转换。对任意参数赋值 $\theta$，TiRA 产生的增量矩阵等价于专家形式在变换后参数 $T\theta$ 下的结果：
+\begin{equation}
+    \Delta W_{\mathrm{block}}(\theta)=\Delta W_{\mathrm{expert}}(T\theta).
+\end{equation}
+其中，TiRA 将同组参数连续聚集于第 $(m+k)\bmod M$ 条分块对角线上，形成局部稠密的块稀疏结构；专家形式则将参数按模 $M$ 同余类交错分散于全局矩阵，形成全局稀疏结构。根据链式法则，两种参数化下的梯度满足
+\begin{equation}
+    \nabla_{\theta}\mathcal{L}_{\mathrm{block}}
+    =T^{\top}\nabla_{\phi}\mathcal{L}_{\mathrm{expert}}\big|_{\phi=T\theta}.
+\end{equation}
+由于 $T$ 仅对应参数坐标的重新排列，两种形式不会改变可表达的权重增量集合，也不会改变梯度更新的基本方向关系。因此，在相同初始化和训练设置下，二者可视为同一结构化更新空间的两种等价参数化形式，预期具有相近的优化行为。
+
+综上，TiRA 继承了多稀疏 LoRA 专家适配的理论可行性与高表达能力，同时其连续分块结构更契合 GPU 内存局部性，可通过高效分块矩阵乘法实现前向传播，避免稀疏索引带来的额外开销。
+
+\subsection{超参数解耦配置策略}
+
+TiRA 将超参数 $K$ 与 $M$ 解耦设计：$M$ 主要决定分块粒度，$K$ 主要决定实际参数量和块内有效秩。这种解耦使得 TiRA 能够在不改变分块结构的情况下，通过调整 $K$ 灵活扩展适配能力，以匹配不同计算预算。为使所有 $M$ 条斜带被均匀使用，$K$ 应满足 $K\geq M$ 且为 $M$ 的整数倍，即
+\begin{equation}
+    K=L\cdot M,
+\end{equation}
+其中 $L\in\mathbb{Z}^{+}$ 表示每个块位置上的叠加层数。当 $L=1$（即 $K=M$）时，每条斜带对应一组适配器；当 $L\geq2$ 时，进入多层叠加模式，参数量、块内秩以及总秩上限随 $L$ 扩展。若固定 $M$ 并在计算资源允许的情况下提高适配能力，可将 $K$ 设置为 $M$ 的倍数（如 $K=2M,3M,\ldots$）。此时每组 $k$ 仍遵循循环移位对角规则放置秩-1 子块，但同一斜带位置由 $L$ 组参数产生的秩-1 子块求和累加。附录~\ref{app:m3k6} 给出了 $M=3,K=6$（$L=2$）时的构造示例。
+
+在该构造下，每个单元块内包含 $L$ 个独立短向量外积之和，块内有效秩上限由 1 提升至 $L$。因此，总秩上界为
+\begin{equation}
+    \rank(\DeltaW)\leq \min\{M^2L,\;d_{\mathrm{out}},\;d_{\mathrm{in}}\}.
+\end{equation}
+可见，当 $M$ 固定时，增大 $L$ 可通过多层叠加提升块内有效秩，并使总秩上界近似随 $L$ 线性增长。
+
+特别地，当 $M=1$ 时，TiRA 不再对权重增量矩阵进行分块，此时 $L=K$，$\DeltaW$ 由 $K$ 个秩-1 外积矩阵叠加而成，结构等价于低秩分解 $\DeltaW=BA$，其中 $B\in\R^{d_{\mathrm{out}}\times K}$ 由 $\{\bm{b}_k\}$ 按列拼接而成，$A\in\R^{K\times d_{\mathrm{in}}}$ 由 $\{\bm{a}_k^{\top}\}$ 按行拼接而成。
+
+\section{实验}
+
+为全面评估 TiRA 在异构任务上的适配能力，本文在常识推理、开放域对话生成和数学推理三类下游任务上开展实验。
+
+\subsection{数据集}
+
+常识推理实验遵循 LLM-Adapters\cite{hu2023llmadapters} 的设置，将多个常识推理数据集合并为统一训练集，并从中随机抽取 120 条样本构成验证集。具体而言，本文在八项常识推理子任务上评估模型性能，共计 170,420 条问答样本用于微调，涵盖 BoolQ\cite{bisk2019boolq}、PIQA\cite{bisk2020piqa}、SIQA\cite{sap2019socialiqa}、HellaSwag\cite{zellers2019hellaswag}、WinoGrande\cite{sakaguchi2021winogrande}、ARC-e、ARC-c\cite{clark2018arc} 和 OBQA\cite{mihaylov2018openbookqa}。其中，BoolQ 主要考察布尔型问答能力，PIQA 侧重物理常识推理，SIQA 关注社会常识推理，HellaSwag 面向常识自然语言推理，WinoGrande 采用完形填空式设置考察代词消解与常识判断能力，ARC-e 与 ARC-c 分别对应科学选择题中的简单与困难划分，OBQA 则侧重开放书本式多步常识推理。
+
+开放域对话生成实验基于 ConvAI2\cite{dinan2019convai2} 数据集展开。该数据集中的每段多轮对话均附带由 4--5 句描述性文本构成的角色人设及历史对话上下文。遵循既有实验设置，本文仅向模型提供当前说话者自身的人设描述，而不引入对话对手的角色信息，以评估模型在仅知悉自身身份信息时结合上下文生成一致、自然回复的能力。
+
+数学推理实验选用 MetaMath\cite{yu2024metamath} 作为训练语料，并在 GSM8K\cite{cobbe2021gsm8k} 原始测试集上进行评估。MetaMath 通过对 GSM8K 与 MATH 等数学数据进行面向推理的增强重写构建，可提供更丰富的多步推理训练样本；GSM8K 由小学数学应用题组成，要求模型通过逐步推导得到最终数值答案，因此常用于衡量大语言模型的数学推理与泛化能力。
+
+\subsection{实验设置}
+
+\paragraph{评估指标。}
+常识推理任务以准确率作为评价指标。模型基于输入查询生成自由文本回复，随后通过关键词匹配机制从生成内容中提取预测答案。例如，BoolQ 任务识别 ``true'' 或 ``false''，多项选择类任务则匹配各数据集预定义候选答案关键词。对于每个样本，首个匹配到的有效关键词被视为预测结果；若未检测到目标关键词，则判定为错误。该评估流程与 DoRA 和 HiRA 保持一致\cite{liu2024dora,huang2025hira}。开放域对话生成任务采用多种自动生成质量指标进行评估，包括 BLEU\cite{papineni2002bleu}、METEOR\cite{banerjee2005meteor}、ROUGE-L\cite{lin2004rouge} 和 BERTScore\cite{zhang2019bertscore}。数学推理任务遵循领域惯例，以准确率作为评价指标。模型生成的最终答案会与标准答案进行匹配；若最终数值或答案表达与标准答案一致，则判定为正确。具体实现中，本文同时抽取生成文本中的最后一个数值和显式答案提示之后的数值，并分别与标准答案比较；只要其中任一抽取结果与标准答案一致，该样本即判定为正确。
+
+\paragraph{基线方法。}
+为全面验证 TiRA 的有效性，本文选取参数高效微调领域的代表性方法作为对比基线，涵盖提示微调与低秩适配两大技术范式。提示微调类方法包括 Prompt Tuning 和 P-Tuning；低秩适配类方法包括 LoRA、DoRA、MoRA 和 HiRA。所有主要实验均在 Llama-2-7B\cite{touvron2023llama2} 与 Llama-3-8B\cite{grattafiori2024llama3} 两款开源大语言模型上完成。除本文复现的 TiRA 结果及消融实验中的 LoRA 对照外，主要基线结果沿用 HiRA 的公开报告，以保证与既有工作的可比性。
+
+\paragraph{实现细节。}
+为保证实验结果与既有研究具有可比性，本文采用与 HiRA 一致的训练配置，并仅对学习率进行任务相关调整。实验采用 AdamW 优化器，预热步数设为 100。常识推理任务以学习率 $2\times10^{-4}$ 微调 2 个 epoch，每 80 步进行一次验证集评估以筛选最优检查点；开放域对话生成任务采用学习率 $2\times10^{-5}$ 训练 1 个 epoch；数学推理任务采用学习率 $4\times10^{-5}$ 训练 2 个 epoch。TiRA 的适配层施加于注意力模块的 Query、Key、Value 投影矩阵及前馈网络的上投影和下投影层。详细超参数见附录~\ref{app:tira_hyperparams}。为确保与 LoRA、DoRA、MoRA 和 HiRA 等基线公平比较，本文严格控制可训练参数量处于同一量级。
+
+\subsection{常识推理实验结果}
+
+\begin{table}[H]
+\centering
+\small
+\caption{各参数高效微调方法在常识推理数据集上的准确率对比。除 TiRA 外，其余基线结果引自 HiRA。最优结果以粗体标示。}
+\label{tab:commonsense}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccccccccc}
+\toprule
+Model & Method & Params (\%) & BoolQ & PIQA & SIQA & ARC-c & ARC-e & OBQA & HellaS & WinoG & Avg. \\
+\midrule
+\multirow{7}{*}{Llama-2-7B}
+& Prompt Tuning & 0.0012 & 55.93 & 12.35 & 30.50 & 6.06 & 8.63 & 9.40 & 6.91 & 40.57 & 21.29 \\
+& P-Tuning & 0.7428 & 58.75 & 36.02 & 0.20 & 0.17 & 1.98 & 0.80 & 0.01 & 0.00 & 12.24 \\
+& LoRA ($r=32$) & 0.8256 & 69.80 & 79.90 & 79.50 & 64.70 & 79.80 & 81.00 & 82.60 & 82.60 & 77.61 \\
+& DoRA ($r=32$) & 0.8256 & 71.80 & 83.70 & 76.00 & 68.20 & 83.70 & 82.40 & 89.10 & 82.60 & 79.69 \\
+& MoRA ($r=32$) & 0.8241 & 72.17 & 80.79 & 79.53 & 71.42 & 85.31 & 81.20 & 29.09 & 80.19 & 72.46 \\
+& HiRA ($r=32$) & 0.8256 & 71.22 & 83.35 & 79.53 & 73.81 & 86.74 & 84.60 & 88.12 & 83.98 & 81.42 \\
+& TiRA ($K=M=32$) & 0.8256 & 70.86 & 83.62 & 80.71 & 72.95 & \textbf{87.67} & 84.40 & 88.98 & \textbf{84.61} & \textbf{81.72} \\
+\midrule
+\multirow{7}{*}{Llama-3-8B}
+& Prompt Tuning & 0.0010 & 56.85 & 45.05 & 36.13 & 31.57 & 32.74 & 29.20 & 14.01 & 50.12 & 36.96 \\
+& P-Tuning & 0.6240 & 59.97 & 11.64 & 8.19 & 7.42 & 8.63 & 9.60 & 1.77 & 37.65 & 18.11 \\
+& LoRA ($r=32$) & 0.7002 & 70.80 & 85.20 & 79.90 & 71.20 & 84.20 & 79.00 & 91.70 & 84.30 & 80.79 \\
+& DoRA ($r=32$) & 0.7002 & 74.60 & 89.30 & 79.90 & 80.40 & 90.50 & 85.80 & 95.50 & 85.60 & 85.20 \\
+& MoRA ($r=32$) & 0.6997 & 74.28 & 87.43 & 80.71 & 79.61 & 91.16 & 85.60 & 43.53 & 86.74 & 78.63 \\
+& HiRA ($r=32$) & 0.7002 & 75.40 & \textbf{89.70} & 81.15 & 82.90 & 93.27 & 88.32 & 95.36 & 87.70 & 86.72 \\
+& TiRA ($K=M=32$) & 0.7002 & \textbf{75.66} & 89.66 & \textbf{83.16} & \textbf{83.70} & \textbf{93.64} & \textbf{90.00} & \textbf{95.83} & \textbf{89.11} & \textbf{87.60} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+表~\ref{tab:commonsense} 显示，TiRA 在两个基座模型上均取得最高平均准确率，整体优于现有基线方法。在 Llama-2-7B 模型上，TiRA 达到 $81.72\%$ 的平均准确率，较次优方法 HiRA（$81.42\%$）提升 $0.30$ 个百分点，较传统低秩适配方法 DoRA（$79.69\%$）提升 $2.03$ 个百分点。在 Llama-3-8B 模型上，TiRA 取得 $87.60\%$ 的平均准确率，优于 HiRA（$86.72\%$）和 DoRA（$85.20\%$），分别带来 $0.88$ 和 $2.40$ 个百分点的性能增益。
+
+进一步分析各子任务表现可见，TiRA 在多数推理基准上展现出稳定优势。特别是在 Llama-3-8B 配置下，TiRA 在 SIQA、ARC-c、ARC-e、OBQA、HellaSwag 和 WinoGrande 等多个子任务上达到最优性能。上述结果表明，在同等可训练参数量约束下，TiRA 能够缓解传统低秩适配的表达能力瓶颈，为复杂常识推理任务提供更有效的参数微调方案。
+
+\subsection{开放域对话生成实验结果}
+
+\begin{table}[H]
+\centering
+\small
+\caption{各参数高效微调方法在 ConvAI2 开放域对话生成数据集上的性能对比。除 TiRA 外，其余基线结果引自 HiRA。最优结果以粗体标示。}
+\label{tab:dialogue}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llcccccccc}
+\toprule
+Model & Method & Params (\%) & BLEU & BERT F1 & BERT-R & BERT-P & METEOR & R-L & Avg. \\
+\midrule
+\multirow{7}{*}{Llama-3-8B}
+& Prompt Tuning & 0.0012 & 1.45 & 82.99 & 82.99 & 83.05 & 14.72 & 13.13 & 46.39 \\
+& P-Tuning & 0.7428 & 1.50 & 81.52 & 81.07 & 82.01 & 15.49 & 13.55 & 45.86 \\
+& MoRA ($r=32$) & 0.8241 & 1.60 & 84.22 & 84.06 & 84.43 & 12.37 & 11.19 & 46.31 \\
+& LoRA ($r=32$) & 0.8256 & 2.26 & 84.32 & 84.00 & 84.67 & 12.51 & 11.77 & 46.59 \\
+& DoRA ($r=32$) & 0.8256 & 2.29 & 84.32 & 84.06 & 84.62 & 12.63 & 11.78 & 46.62 \\
+& HiRA ($r=32$) & 0.8256 & 3.41 & \textbf{84.81} & 84.40 & \textbf{85.25} & 14.87 & 14.05 & 47.80 \\
+& TiRA ($K=M=32$) & 0.7002 & \textbf{3.50} & 84.78 & \textbf{84.48} & 85.11 & \textbf{15.66} & \textbf{14.34} & \textbf{48.04} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+如表~\ref{tab:dialogue} 所示，TiRA 在 Llama-3-8B 模型上取得最高对话生成质量，以 $48.04\%$ 的平均分超过 HiRA（$47.80\%$）、DoRA（$46.62\%$）、LoRA（$46.59\%$）和 MoRA（$46.31\%$）等对比方法。TiRA 在 BLEU、METEOR、BERT-R 和 ROUGE-L 四个子指标上达到最优，BERT F1 与 BERT-P 也保持竞争力。结果表明，TiRA 的分块化高秩适配机制能够有效捕捉开放域对话上下文中的复杂语义关联，从而提升生成回复与参考回复之间的一致性。
+
+\subsection{数学推理实验结果}
+
+\begin{table}[H]
+\centering
+\caption{各参数高效微调方法在数学推理任务上的准确率对比。训练语料为 MetaMath，测试基准为 GSM8K。数学评测中，生成文本最后一个数值或显式答案提示后的数值任一与标准答案一致即判定为正确。除 TiRA 外，其余基线结果引自 HiRA。最优结果以粗体标示。}
+\label{tab:math}
+\begin{tabular}{llcc}
+\toprule
+Model & Method & Trainable (\%) & GSM8K \\
+\midrule
+\multirow{7}{*}{Llama-3-8B}
+& Prompt Tuning & 0.0012 & 15.62 \\
+& P-Tuning & 0.7428 & 2.65 \\
+& LoRA ($r=32$) & 0.7002 & 65.89 \\
+& DoRA ($r=32$) & 0.7002 & 66.12 \\
+& MoRA ($r=32$) & 0.6997 & 67.98 \\
+& HiRA ($r=32$) & 0.7002 & 70.81 \\
+& TiRA ($K=M=32$) & 0.7002 & \textbf{73.01} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+如表~\ref{tab:math} 所示，TiRA 在 Llama-3-8B 模型上达到 $73.01\%$ 的准确率，在同等可训练参数预算下显著优于表中基线方法。与次优方法 HiRA（$70.81\%$）相比，TiRA 提升 $2.20$ 个百分点；与传统低秩适配方法 LoRA（$65.89\%$）和 DoRA（$66.12\%$）相比，分别提升 $7.12$ 和 $6.89$ 个百分点。该结果表明，在不增加可训练参数的前提下，TiRA 能够显著增强模型对复杂多步数学推理任务的适配能力。
+
+\section{消融实验}
+
+\subsection{分块粒度 $M$ 的影响}
+
+当 $M=1$ 时，TiRA 不再进行分块，其结构退化为秩为 $K$ 的低秩分解 $BA$，与 LoRA 形式等价。为分析分块粒度 $M$ 对适配性能的影响，本文固定 $K=32$，使 TiRA 的可训练参数量与 LoRA（$r=32$）严格对齐，并仅改变分块数 $M$。为进一步检验不同模型容量下分块粒度选择的规律，本文选取 Qwen-2-0.5B、Qwen-2-1.5B 和 Qwen-2.5-3B\cite{yang2024qwen2,yang2024qwen25} 三个规模递进的开源大语言模型作为主对照序列，并统一在 MetaMath 上微调 2 个 epoch，在 GSM8K 测试集上评估。详细超参数见附录~\ref{app:ablation_hyperparams}。实验结果如表~\ref{tab:ablation} 和图~\ref{fig:ablation_m_trend} 所示，表中还纳入更大规模的 Llama-3-8B，用于补充观察该规律在更大模型尺度上的外推趋势。
+
+\begin{table}[H]
+\centering
+\small
+\caption{不同规模模型上的分块粒度 $M$ 消融实验。所有配置固定 $K=32$，可训练参数量与同模型上的 LoRA（$r=32$）严格持平。数学评测采用任一答案抽取结果正确即判定正确的规则。最优结果以粗体标示。}
+\label{tab:ablation}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+Model & Hidden & Trainable (\%) & LoRA & $M=2$ & $M=4$ & $M=8$ & $M=16$ & $M=32$ \\
+\midrule
+Qwen-2-0.5B & 896 & 2.33 & 38.59 & \textbf{39.20} & 38.82 & 36.54 & -- & -- \\
+Qwen-2-1.5B & 1536 & 1.58 & 68.08 & -- & 68.39 & \textbf{68.84} & 68.01 & -- \\
+Qwen-2.5-3B & 2048 & 1.28 & 74.30 & -- & -- & 74.53 & 75.13 & \textbf{75.44} \\
+Llama-3-8B & 4096 & 0.70 & 65.89 & -- & -- & -- & 71.57 & \textbf{73.01} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.88\linewidth]{figures/tira_ablation_m_trend.pdf}
+    \caption{固定 $K=32$ 时，不同模型在 LoRA 与 TiRA 不同分块粒度下的 GSM8K 准确率变化。横轴为有效秩上限；LoRA（$r=32$）以叉号标在横轴 $32$ 处。空心圆标出各模型上 TiRA 的最优配置，灰色虚线连接 Qwen 系列模型的最优 TiRA 点以突出最优分块粒度随模型规模增大的右移趋势。}
+    \label{fig:ablation_m_trend}
+\end{figure}
+
+\paragraph{最优分块粒度随模型容量右移。}
+在固定预算 $K=32$ 条件下，最优 $M$ 随模型容量增大而右移，且最优等效秩与隐藏维度之比同步上升。Qwen-2-0.5B、Qwen-2-1.5B 和 Qwen-2.5-3B 的最优 $M$ 分别为 2、8 和 32，对应总秩上限 $KM$ 分别为 64、256 和 1024。与各自隐藏维度（896、1536、2048）相比，最优等效秩占隐藏维度的比例由 $7.1\%$ 增至 $16.7\%$ 和 $50.0\%$。图~\ref{fig:ablation_m_trend} 进一步显示，小模型在较大 $M$ 下会出现性能回落，而较大模型的最优点出现在更高有效秩区间。需要指出的是，由于本组实验固定 $K=32$，且 TiRA 要求 $K\geq M$ 并且 $K$ 为 $M$ 的整数倍，因此可考察的最大分块粒度为 $M=32$。Llama-3-8B 的最佳结果出现在该搜索边界上，说明当前实验范围内较大 $M$ 更有利，但不能排除在更高 $K$ 预算下继续增大 $M$ 仍可能带来收益。这一趋势表明，模型容量越大，越可能承载并受益于更高秩适配。
+
+\paragraph{TiRA 的结构优势随模型规模放大。}
+在三档 Qwen 模型上，TiRA 的最优配置均优于 LoRA 基线，且增益随模型规模扩大而增加：Qwen-2-0.5B、Qwen-2-1.5B 和 Qwen-2.5-3B 分别提升 $0.61$、$0.76$ 和 $1.14$ 个百分点。进一步纳入 Llama-3-8B 后，最优 TiRA 配置相对 LoRA（$r=32$）的提升扩大至 $7.12$ 个百分点。如图~\ref{fig:best_gain_scale} 所示，最佳 TiRA 增益整体随隐藏维度增大而上升。值得注意的是，随着模型规模增大，可训练参数占比由 $2.33\%$ 降至 $0.70\%$，但 TiRA 相对 LoRA 的增益仍整体放大。这表明 TiRA 的优势主要来自结构层面的高秩扩展能力，而非参数预算增加。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.82\linewidth]{figures/tira_best_gain_vs_scale.pdf}
+    \caption{不同模型规模下最佳 TiRA 配置相对 LoRA（$r=32$）的准确率增益。横轴为隐藏维度，纵轴为最佳 TiRA 与 LoRA 的 GSM8K 准确率差值。点旁标注对应模型在当前搜索范围内的最优分块粒度 $M$。}
+    \label{fig:best_gain_scale}
+\end{figure}
+
+\paragraph{高秩优势受模型容量约束，存在秩过载效应。}
+TiRA 的高秩优势并不会随分组数 $M$ 增大而单调增强，而是受到模型容量约束。以 Qwen-2-0.5B 为例，当 $M$ 从 2 增大到 4 时准确率已出现下降，继续增大至 $M=8$ 后进一步降至 $36.54\%$，低于 LoRA 基线的 $38.59\%$。Qwen-2-1.5B 也在 $M=16$ 时出现性能回落，低于其最优配置 $M=8$。这说明，当 TiRA 引入的扰动自由度超过模型可有效协调的范围时，额外高秩分量未必带来更强表达能力，反而可能造成性能退化。本文将这一现象称为“秩过载”效应。
+
+较大模型通常具有更高的隐藏维度、更强的参数冗余和更充分的表征空间，任务相关特征更可能分布在相对分离的子空间中，因此多个秩-1 分量可以分别作用于不同低维方向，并通过优化过程组合为全局一致的高秩扰动。相反，小模型的表征空间和可调整自由度有限；当 $M$ 过大时，过多扰动分量可能竞争相同或相近的特征通道，导致梯度方向冲突和优化耦合增强，从而抵消新增分量带来的表达增益。
+
+上述规律揭示了分块粒度与模型容量之间的耦合关系。随着模型规模增大，表征空间冗余度和可协调的扰动自由度相应提升，模型对高秩适配的承载能力也随之增强。因此，高秩更新是否有效不仅取决于任务是否需要更高秩表达，也取决于基座模型是否具备承载这些高秩扰动的能力。由此可见，小模型上的性能退化不应简单归因于 TiRA 结构失效；更合理的解释是，$M$ 同时调控高秩扰动自由度与分量协同难度，而不同规模模型对这种自由度的承载能力存在差异。因此，TiRA 的最优 $M$ 需要与模型容量匹配。较大模型更可能从较高 $M$ 中获益，而小模型一旦越过容量阈值，则可能进入秩过载区间，导致准确率下降甚至低于 LoRA 基线。
+
+\section{结论}
+
+本文提出 TiRA，一种面向大语言模型的分块化高秩参数高效适配方法。TiRA 在保持与 LoRA 相同可训练参数量级的前提下，通过结构化分块与错位块对角构造，将权重更新的有效秩由 $r$ 扩展至 $r^2$，从而增强模型对复杂推理与生成任务的适配能力。同时，TiRA 保留了 LoRA 可合并、无额外推理开销的优势。大量实验表明，在同等参数预算设置下，TiRA 在常识推理、开放域对话生成和数学推理任务上整体优于现有代表性 PEFT 方法。未来工作将进一步探索 TiRA 在更多模型规模、任务类型和实际应用场景中的表现，并研究分块粒度与模型容量、任务复杂度之间的更一般性匹配规律。
+
+\appendix
+
+\section{TiRA 构造示例}
+
+\subsection{$K=M=3$ 的分块构造}
+\label{app:k3m3}
+
+以 $K=M=3$ 为例，三个适配组分别占据三条互异的循环移位对角线，其稀疏增量矩阵可写为
+\begin{equation}
+\Delta W_0=
+\begin{bmatrix}
+C_{0,0} & 0 & 0\\
+0 & C_{0,1} & 0\\
+0 & 0 & C_{0,2}
+\end{bmatrix},\quad
+\Delta W_1=
+\begin{bmatrix}
+0 & C_{1,0} & 0\\
+0 & 0 & C_{1,1}\\
+C_{1,2} & 0 & 0
+\end{bmatrix},\quad
+\Delta W_2=
+\begin{bmatrix}
+0 & 0 & C_{2,0}\\
+C_{2,1} & 0 & 0\\
+0 & C_{2,2} & 0
+\end{bmatrix}.
+\end{equation}
+其中 $C_{k,m}\in\R^{(d_{\mathrm{out}}/M)\times(d_{\mathrm{in}}/M)}$ 为第 $k$ 个适配组沿其循环移位对角线的第 $m$ 个秩-1 外积子块。三者沿错位块对角线互补分布，叠加后在全部 $3\times3$ 个块位置形成非零子块：
+\begin{equation}
+\DeltaW=
+\begin{bmatrix}
+C_{0,0} & C_{1,0} & C_{2,0}\\
+C_{2,1} & C_{0,1} & C_{1,1}\\
+C_{1,2} & C_{2,2} & C_{0,2}
+\end{bmatrix}.
+\end{equation}
+
+\subsection{多稀疏 LoRA 专家适配示例}
+\label{app:sparse_expert}
+
+以 $d_{\mathrm{in}}=9$、$d_{\mathrm{out}}=6$、$r=3$ 为例，多稀疏 LoRA 专家形式可通过三组互补的稀疏适配器对应不同循环移位对角线。第 $k$ 组由稀疏矩阵 $B_k$ 与 $A_k^{\top}$ 构成，其中 $B_k$ 按输出维度的模 $M$ 同余类放置非零元素，$A_k^{\top}$ 按列方向进行循环移位。三组结果相加后得到完整的结构化增量矩阵，其可达矩阵集合与 TiRA 的分块参数化完全一致。该示例说明 TiRA 可视为多稀疏 LoRA 专家适配的一种局部连续重排形式，两者之间由置换矩阵建立线性双射。
+
+\subsection{$M=3,K=6$ 的多层叠加构造}
+\label{app:m3k6}
+
+以 $M=3,K=6$（$L=2$）为例，第 0 条斜带由第 0 组和第 3 组共同产生，第 1 条斜带由第 1 组和第 4 组共同产生，第 2 条斜带由第 2 组和第 5 组共同产生。同一斜带上的对应块位置进行求和累加，因此总增量矩阵为
+\begin{equation}
+\DeltaW=
+\begin{bmatrix}
+C_{0,0}+C_{3,0} & C_{1,0}+C_{4,0} & C_{2,0}+C_{5,0}\\
+C_{2,1}+C_{5,1} & C_{0,1}+C_{3,1} & C_{1,1}+C_{4,1}\\
+C_{1,2}+C_{4,2} & C_{2,2}+C_{5,2} & C_{0,2}+C_{3,2}
+\end{bmatrix}.
+\end{equation}
+此时每个单元块由两个独立秩-1 外积叠加形成，块内秩上限由 1 提升至 2。
+
+\section{超参数设置}
+
+\subsection{LoRA 超参数设置}
+\label{app:lora_hyperparams}
+
+\begin{table}[H]
+\centering
+\caption{Motivation 实验中的 LoRA 超参数设置。}
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Base Model & Qwen-2-1.5B \\
+Method & LoRA \\
+Datasets & GSM8K-Easy, GSM8K-Challenge \\
+LoRA Rank ($r$) & 8, 16, 32, 64, 128 \\
+LoRA Alpha ($\alpha$) & 8, 16, 32, 64, 128 \\
+LoRA Dropout & 0.05 \\
+Learning Rate & $1\times10^{-4}$ \\
+Epochs & 2 \\
+Batch Size & 160 \\
+Warmup & 100 steps \\
+Weight Decay & 0 \\
+Target Modules & q\_proj, k\_proj, v\_proj, up\_proj, down\_proj \\
+Evaluation Steps & Every 2 steps \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{TiRA 超参数设置}
+\label{app:tira_hyperparams}
+
+\begin{table}[H]
+\centering
+\caption{主要实验中的 TiRA 超参数设置。}
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Optimizer & AdamW \\
+Weight Decay & 0 \\
+Warmup & 100 steps \\
+Batch Size & 32 \\
+Target Modules & q\_proj, k\_proj, v\_proj, up\_proj, down\_proj \\
+Evaluation Steps & Every 80 steps \\
+\midrule
+Commonsense Base Models & Llama-2-7B, Llama-3-8B \\
+Commonsense $K,M$ & 32, 32 \\
+Commonsense Learning Rate & $2\times10^{-4}$ \\
+Commonsense Epochs & 2 \\
+\midrule
+Dialogue Base Model & Llama-3-8B \\
+Dialogue $K,M$ & 32, 32 \\
+Dialogue Learning Rate & $2\times10^{-5}$ \\
+Dialogue Epochs & 1 \\
+\midrule
+Math Base Model & Llama-3-8B \\
+Math $K,M$ & 32, 16/32 \\
+Math Learning Rate & $4\times10^{-5}$ \\
+Math Epochs & 2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{消融实验超参数设置}
+\label{app:ablation_hyperparams}
+
+\begin{table}[H]
+\centering
+\caption{消融实验中的超参数设置。}
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value \\
+\midrule
+Dataset & MetaMath \\
+Epochs & 2 \\
+Batch Size & 32 \\
+Warmup & 100 steps \\
+Weight Decay & 0 \\
+Target Modules & q\_proj, k\_proj, v\_proj, up\_proj, down\_proj \\
+Evaluation Steps & Every 100 steps \\
+\midrule
+LoRA Rank/Alpha & 32/32 \\
+LoRA Dropout & 0 \\
+\midrule
+TiRA Qwen-2-0.5B & $K=32$, $M\in\{2,4,8\}$, Learning Rate $1\times10^{-4}$ \\
+TiRA Qwen-2-1.5B & $K=32$, $M\in\{4,8,16\}$, Learning Rate $7\times10^{-5}$ \\
+TiRA Qwen-2.5-3B & $K=32$, $M\in\{16,32\}$, Learning Rate $5\times10^{-5}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{thebibliography}{99}
+
+\bibitem{vaswani2017attention}
+A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser, and I. Polosukhin, ``Attention is all you need,'' in \emph{Advances in Neural Information Processing Systems}, vol. 30, 2017.
+
+\bibitem{li2021prefix}
+X. L. Li and P. Liang, ``Prefix-tuning: Optimizing continuous prompts for generation,'' in \emph{Proceedings of ACL-IJCNLP}, 2021, pp. 4582--4597.
+
+\bibitem{lester2021power}
+B. Lester, R. Al-Rfou, and N. Constant, ``The power of scale for parameter-efficient prompt tuning,'' in \emph{Proceedings of EMNLP}, 2021, pp. 3045--3059.
+
+\bibitem{xiao2022ptuning}
+L. Xiao, K. Ji, and Y. Fu, ``P-tuning v2: Prompt tuning can be comparable to fine-tuning universally across scales,'' \emph{arXiv preprint arXiv:2110.07602}, 2022.
+
+\bibitem{hu2022lora}
+E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen, ``LoRA: Low-rank adaptation of large language models,'' in \emph{International Conference on Learning Representations}, 2022.
+
+\bibitem{liu2024dora}
+S.-Y. Liu, C.-Y. Wang, H. Yin, P. Molchanov, Y.-C. F. Wang, K.-T. Cheng, and M.-H. Chen, ``DoRA: Weight-decomposed low-rank adaptation,'' in \emph{International Conference on Machine Learning}, 2024.
+
+\bibitem{jiang2024mora}
+T. Jiang, S. Huang, S. Luo, Z. Zhang, H. Huang, F. Wei, W. Deng, F. Sun, Q. Zhang, D. Wang, and F. Zhuang, ``MoRA: High-rank updating for parameter-efficient fine-tuning,'' \emph{arXiv preprint arXiv:2405.12130}, 2024.
+
+\bibitem{huang2025hira}
+Q. Huang, T. Ko, Z. Zhuang, Y. Liu, Y. Wang, M. Hasegawa-Johnson, S. Watanabe, and Z. D. Chen, ``HiRA: Parameter-efficient Hadamard high-rank adaptation for large language models,'' in \emph{International Conference on Learning Representations}, 2025.
+
+\bibitem{wei2022cot}
+J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. Chi, Q. Le, and D. Zhou, ``Chain-of-thought prompting elicits reasoning in large language models,'' in \emph{Advances in Neural Information Processing Systems}, vol. 35, 2022, pp. 24824--24837.
+
+\bibitem{kojima2022zero}
+T. Kojima, S. S. Gu, M. Reid, Y. Matsuo, and Y. Iwasawa, ``Large language models are zero-shot reasoners,'' in \emph{Advances in Neural Information Processing Systems}, vol. 35, 2022, pp. 22199--22213.
+
+\bibitem{cobbe2021gsm8k}
+K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman, ``Training verifiers to solve math word problems,'' \emph{arXiv preprint arXiv:2110.14168}, 2021.
+
+\bibitem{he2015rectifier}
+K. He, X. Zhang, S. Ren, and J. Sun, ``Delving deep into rectifiers: Surpassing human-level performance on ImageNet classification,'' in \emph{Proceedings of ICCV}, 2015, pp. 1026--1034.
+
+\bibitem{hu2023llmadapters}
+Z. Hu, L. Wang, Y. Lan, W. Xu, E.-P. Lim, L. Bing, X. Xu, S. Poria, and R. K.-W. Lee, ``LLM-Adapters: An adapter family for parameter-efficient fine-tuning of large language models,'' in \emph{Proceedings of EMNLP}, 2023, pp. 5254--5276.
+
+\bibitem{bisk2019boolq}
+Y. Bisk, C. ZelleClark, K. Lee, C. Chang, M. W. Chang, and K. Toutanova, ``BoolQ: Exploring the surprising difficulty of natural yes/no questions,'' in \emph{Proceedings of NAACL-HLT}, 2019, pp. 2924--2936.
+
+\bibitem{bisk2020piqa}
+Y. Bisk, R. Zellers, J. Gao, Y. Choi, et al., ``PIQA: Reasoning about physical commonsense in natural language,'' in \emph{Proceedings of AAAI}, vol. 34, no. 05, 2020, pp. 7432--7439.
+
+\bibitem{sap2019socialiqa}
+M. Sap, H. Rashkin, D. Chen, R. Le Bras, and Y. Choi, ``Social IQa: Commonsense reasoning about social interactions,'' in \emph{Proceedings of EMNLP-IJCNLP}, 2019, pp. 4463--4473.
+
+\bibitem{zellers2019hellaswag}
+R. Zellers, A. Holtzman, Y. Bisk, A. Farhadi, and Y. Choi, ``HellaSwag: Can a machine really finish your sentence?'' in \emph{Proceedings of ACL}, 2019, pp. 4791--4800.
+
+\bibitem{sakaguchi2021winogrande}
+K. Sakaguchi, R. L. Bras, C. Bhagavatula, and Y. Choi, ``WinoGrande: An adversarial Winograd schema challenge at scale,'' \emph{Communications of the ACM}, vol. 64, no. 9, pp. 99--106, 2021.
+
+\bibitem{clark2018arc}
+P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and O. Tafjord, ``Think you have solved question answering? Try ARC, the AI2 reasoning challenge,'' \emph{arXiv preprint arXiv:1803.05457}, 2018.
+
+\bibitem{mihaylov2018openbookqa}
+T. Mihaylov, P. Clark, T. Khot, and A. Sabharwal, ``Can a suit of armor conduct electricity? A new dataset for open book question answering,'' in \emph{Proceedings of EMNLP}, 2018, pp. 2381--2391.
+
+\bibitem{dinan2019convai2}
+E. Dinan, V. Logacheva, V. Malykh, A. H. Miller, K. Shuster, J. Urbanek, D. Kiela, A. Szlam, I. Serban, R. Lowe, S. Prabhumoye, A. W. Black, A. Rudnicky, J. Williams, J. Pineau, M. Burtsev, and J. Weston, ``The second conversational intelligence challenge (ConvAI2),'' in \emph{The NeurIPS'18 Competition: From Machine Learning to Intelligent Conversations}. Springer, 2019, pp. 187--208.
+
+\bibitem{yu2024metamath}
+L. Yu, W. Jiang, H. Shi, J. Yu, Z. Liu, Y. Zhang, J. T. Kwok, Z. Li, A. Weller, and W. Liu, ``MetaMath: Bootstrap your own mathematical questions for large language models,'' in \emph{International Conference on Learning Representations}, 2024.
+
+\bibitem{papineni2002bleu}
+K. Papineni, S. Roukos, T. Ward, and W.-J. Zhu, ``BLEU: A method for automatic evaluation of machine translation,'' in \emph{Proceedings of ACL}, 2002, pp. 311--318.
+
+\bibitem{banerjee2005meteor}
+S. Banerjee and A. Lavie, ``METEOR: An automatic metric for MT evaluation with improved correlation with human judgments,'' in \emph{Proceedings of the ACL Workshop on Intrinsic and Extrinsic Evaluation Measures for Machine Translation and/or Summarization}, 2005, pp. 65--72.
+
+\bibitem{lin2004rouge}
+C.-Y. Lin, ``ROUGE: A package for automatic evaluation of summaries,'' in \emph{Text Summarization Branches Out}, 2004, pp. 74--81.
+
+\bibitem{zhang2019bertscore}
+T. Zhang, V. Kishore, F. Wu, K. Q. Weinberger, and Y. Artzi, ``BERTScore: Evaluating text generation with BERT,'' \emph{arXiv preprint arXiv:1904.09675}, 2019.
+
+\bibitem{touvron2023llama2}
+H. Touvron, L. Martin, K. Stone, P. Albert, A. Almahairi, Y. Babaei, N. Bashlykov, S. Batra, P. Bhargava, S. Bhosale, et al., ``Llama 2: Open foundation and fine-tuned chat models,'' \emph{arXiv preprint arXiv:2307.09288}, 2023.
+
+\bibitem{grattafiori2024llama3}
+A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schelten, A. Vaughan, et al., ``The Llama 3 herd of models,'' \emph{arXiv preprint arXiv:2407.21783}, 2024.
+
+\bibitem{yang2024qwen2}
+A. Yang, B. Yang, B. Hui, B. Zheng, B. Yu, C. Zhou, C. Li, C. Li, D. Liu, F. Huang, et al., ``Qwen2 technical report,'' \emph{arXiv preprint arXiv:2407.10671}, 2024.
+
+\bibitem{yang2024qwen25}
+A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F. Huang, H. Wei, et al., ``Qwen2.5 technical report,'' \emph{arXiv preprint arXiv:2412.15115}, 2024.
+
+\end{thebibliography}
+
+\end{document}

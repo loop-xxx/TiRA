@@ -1,0 +1,11 @@
+# Local environment
+/.env
+
+# IDE settings
+/.idea/
+
+# Dataset files
+/data_file/**/*.json
+
+# Experiment outputs
+/results_tira/

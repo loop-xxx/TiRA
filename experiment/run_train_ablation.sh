@@ -1,0 +1,101 @@
+#!/bin/bash
+# Training script using commonsense_170k mixed dataset (same as original HiRA setup).
+# Run from the experiment/ directory.
+#
+# Usage:
+#   bash run_train.sh                  # default: tira
+#   PEFT=lora bash run_train.sh        # LoRA only (baseline)
+#   PEFT=hira bash run_train.sh        # HiRA baseline
+
+MODEL=${MODEL:-"./models/$1"}
+OUTPUT=${OUTPUT:-"results_tira"}
+PEFT=${PEFT:-"$2"}
+DATASET=${DATASET:-"meta_math"}
+SEED=${SEED:-"36"}
+# Paper hyperparameters
+EPOCH=${EPOCH:-"2"}
+LR=${LR:-"$3"}
+LR_SCHEDULER_TYPE=${LR_SCHEDULER_TYPE:-"linear"}
+BATCH=${BATCH:-"32"}
+GRAD_ACC=${GRAD_ACC:-"1"}
+WARMUP=${WARMUP:-"100"}
+TARGET_MODULES=${TARGET_MODULES:-"q_proj,k_proj,v_proj,up_proj,down_proj"}
+
+
+# Eval every 80 steps, keep 20 ckpts, pick best after full training
+EVAL_STRATEGY="steps"
+EVAL_STEPS="100"
+SAVE_TOTAL_LIMIT="5"
+EARLY_STOP_PATIENCE="0"
+
+echo ">>> Training on $DATASET with peft_type=$PEFT"
+
+if [ "$PEFT" = "lora" ]; then
+    CUDA_VISIBLE_DEVICES=0 python train.py \
+        --peft_type lora \
+        --model $MODEL \
+        --dataset $DATASET \
+        --seed $SEED \
+        --lr $LR \
+        --batch $BATCH \
+        --grad_acc $GRAD_ACC \
+        --enable_grad_ckpt \
+        --target_modules "$TARGET_MODULES" \
+        --epoch $EPOCH \
+        --warmup $WARMUP \
+        --lr_scheduler_type $LR_SCHEDULER_TYPE \
+        --weight_decay 0 \
+        --lora_r $4 \
+        --lora_alpha $4 \
+        --lora_dropout 0 \
+        --eval_strategy $EVAL_STRATEGY \
+        --eval_steps $EVAL_STEPS \
+        --save_total_limit $SAVE_TOTAL_LIMIT \
+        --early_stop_patience $EARLY_STOP_PATIENCE \
+        --output_folder $OUTPUT
+
+elif [ "$PEFT" = "hira" ]; then
+    CUDA_VISIBLE_DEVICES=0 python train.py \
+        --peft_type hira \
+        --model $MODEL \
+        --dataset $DATASET \
+        --seed $SEED \
+        --lr $LR \
+        --batch $BATCH \
+        --grad_acc $GRAD_ACC \
+        --enable_grad_ckpt \
+        --target_modules "$TARGET_MODULES" \
+        --epoch $EPOCH \
+        --warmup $WARMUP \
+        --lr_scheduler_type $LR_SCHEDULER_TYPE \
+        --weight_decay 0 \
+        --r_ab 32 \
+        --eval_strategy $EVAL_STRATEGY \
+        --eval_steps $EVAL_STEPS \
+        --save_total_limit $SAVE_TOTAL_LIMIT \
+        --early_stop_patience $EARLY_STOP_PATIENCE \
+        --output_folder $OUTPUT \
+    
+elif [ "$PEFT" = "tira" ]; then
+    CUDA_VISIBLE_DEVICES=0 python train.py \
+        --peft_type tira \
+        --model $MODEL \
+        --dataset $DATASET \
+        --seed $SEED \
+        --lr $LR \
+        --batch $BATCH \
+        --grad_acc $GRAD_ACC \
+        --enable_grad_ckpt \
+        --target_modules "$TARGET_MODULES" \
+        --epoch $EPOCH \
+        --warmup $WARMUP \
+        --lr_scheduler_type $LR_SCHEDULER_TYPE \
+        --weight_decay 0 \
+        --tira_M $5 \
+        --tira_K $6 \
+        --eval_strategy $EVAL_STRATEGY \
+        --eval_steps $EVAL_STEPS \
+        --save_total_limit $SAVE_TOTAL_LIMIT \
+        --early_stop_patience $EARLY_STOP_PATIENCE \
+        --output_folder $OUTPUT
+fi
