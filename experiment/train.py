@@ -37,9 +37,8 @@ parser.add_argument('--lr_scheduler_type', type=str, default='linear')
 parser.add_argument('--model_name', type=str, default="facebook/opt-125m")
 parser.add_argument('--ckpt', type=str, default=None)
 parser.add_argument('--dataset', type=str, default='boolq',
-                    choices=['e2e_nlg', 'dailydialog', 'samsum', 'e2e_cleaned', 'boolq', 'mmlu', 'common_170k', 'gsm8k',
-                             'gsm8k-easy', 'gsm8k-challenge', 'piqa', 'siqa', 'hellas', 'winog', 'arce', 'arcc', 'obqa', 'convai2', 'meta_math',
-                             'common_all'])
+                    choices=[ 'boolq', 'piqa', 'siqa', 'hellas', 'winog', 'arce', 'arcc', 'obqa','common_170k','common_all', 'gsm8k',
+                             'gsm8k-easy', 'gsm8k-challenge',  'convai2', 'meta_math'])
 parser.add_argument('--dataset_analysis', action='store_true')
 
 parser.add_argument('--dataset_ratio', type=float, default=1.0)

@@ -25,7 +25,7 @@ echo ">>> Training on $DATASET with peft_type=$PEFT"
 if [ "$PEFT" = "lora" ]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
         --peft_type lora \
-        --model $MODEL \
+        --model_name $MODEL \
         --dataset $DATASET \
         --seed $SEED \
         --lr $LR \
@@ -48,7 +48,7 @@ if [ "$PEFT" = "lora" ]; then
 elif [ "$PEFT" = "hira" ]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
         --peft_type hira \
-        --model $MODEL \
+        --model_name $MODEL \
         --dataset $DATASET \
         --seed $SEED \
         --lr $LR \
@@ -69,7 +69,7 @@ elif [ "$PEFT" = "hira" ]; then
 elif [ "$PEFT" = "tira" ]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
         --peft_type tira \
-        --model $MODEL \
+        --model_name $MODEL \
         --dataset $DATASET \
         --seed $SEED \
         --lr $LR \
