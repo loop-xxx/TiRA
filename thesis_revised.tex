@@ -317,7 +317,7 @@ Model & Method & Trainable (\%) & GSM8K \\
 
 如表~\ref{tab:math} 所示，TiRA 在 Llama-3-8B 模型上达到 $73.01\%$ 的准确率，在同等可训练参数预算下显著优于表中基线方法。与次优方法 HiRA（$70.81\%$）相比，TiRA 提升 $2.20$ 个百分点；与传统低秩适配方法 LoRA（$65.89\%$）和 DoRA（$66.12\%$）相比，分别提升 $7.12$ 和 $6.89$ 个百分点。该结果表明，在不增加可训练参数的前提下，TiRA 能够显著增强模型对复杂多步数学推理任务的适配能力。
 
-\subsection{消融实验：分块粒度 $M$ 的影响}
+\subsection{分块粒度 $M$ 对适配性能的影响}
 
 当 $M=1$ 时，TiRA 不再进行分块，其结构退化为秩为 $K$ 的低秩分解 $BA$，与 LoRA 形式等价。为分析分块粒度 $M$ 对适配性能的影响，本文固定 $K=32$，使 TiRA 的可训练参数量与 LoRA（$r=32$）严格对齐，并仅改变分块数 $M$。为进一步检验不同模型容量下分块粒度选择的规律，本文选取 Qwen-2-0.5B、Qwen-2-1.5B 和 Qwen-2.5-3B\cite{yang2024qwen2,yang2024qwen25} 三个规模递进的开源大语言模型作为主对照序列，并统一在 MetaMath 上微调 2 个 epoch，在 GSM8K 测试集上评估。详细超参数见附录~\ref{app:ablation_hyperparams}。实验结果如表~\ref{tab:ablation} 和图~\ref{fig:ablation_m_trend} 所示，表中还纳入更大规模的 Llama-3-8B，用于补充观察该规律在更大模型尺度上的外推趋势。
 
