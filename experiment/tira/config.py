@@ -43,7 +43,7 @@ class TiraConfig(PeftConfig):
     """
     tira_M: int = field(default=16, metadata={"help": "Number of block segments M"})
     tira_K: int = field(default=16, metadata={"help": "Number of groups K (K >= M, multiple of M)"})
-    tira_alpha: Optional[float] = field(default=None, metadata={"help": "Scaling alpha for TIRA; effective scale is alpha / K. If None, uses K"})
+    tira_alpha: Optional[int] = field(default=None, metadata={"help": "Scaling alpha for TIRA; effective scale is alpha / K. If None, uses K"})
     tira_q_M: Optional[int] = field(default=None, metadata={"help": "Override M for q_proj only; fallback to tira_M"})
     tira_q_K: Optional[int] = field(default=None, metadata={"help": "Override K for q_proj only; fallback to tira_K"})
     tira_k_M: Optional[int] = field(default=None, metadata={"help": "Override M for k_proj only; fallback to tira_M"})

@@ -23,6 +23,7 @@ Forward pass avoids materializing the full ΔW (d_out × d_in) by computing
     Cost: O(K × batch × (d_in + d_out))  vs  O(batch × d_in × d_out)
 """
 import math
+from typing import Optional
 import warnings
 
 import torch
@@ -55,7 +56,7 @@ class TiraLayer:
         adapter_name: str,
         M: int,
         K: int,
-        alpha: float = None,
+        alpha: Optional[int] = None,
     ):
         """Initialize or update adapter parameters for a given adapter name.
 
@@ -74,7 +75,7 @@ class TiraLayer:
 
         self.tira_M[adapter_name] = M
         self.tira_K[adapter_name] = K
-        self.tira_alpha[adapter_name] = float(K if alpha is None else alpha)
+        self.tira_alpha[adapter_name] = K if alpha is None else alpha
 
         n_out = self.out_features // M
         n_in = self.in_features // M
@@ -146,7 +147,7 @@ class TiraLayer:
             self.out_features, self.in_features
         )
         alpha = self.tira_alpha[adapter_name]
-        scale = alpha / K
+        scale = alpha // K
         return delta * scale
 
 
@@ -166,7 +167,7 @@ class TiraLinear(nn.Linear, TiraLayer):
         out_features: int,
         M: int = 16,
         K: int = 16,
-        alpha: float = None,
+        alpha: int = None,
         bias: bool = True,
         **kwargs,
     ):
@@ -260,7 +261,7 @@ class TiraLinear(nn.Linear, TiraLayer):
             ).permute(1, 0, 2)                  # (batch, M, n_out)
 
             y_delta = y_delta.reshape(-1, self.out_features)
-            scale = alpha / K
+            scale = alpha // K
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
 
         return result

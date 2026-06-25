@@ -72,7 +72,7 @@ parser.add_argument('--resume', action='store_true',
 # TIRA arguments
 parser.add_argument('--tira_M', type=int, default=16, help='Default number of block segments M for TIRA')
 parser.add_argument('--tira_K', type=int, default=8, help='Default number of parallel branches K for TIRA')
-parser.add_argument('--tira_alpha', type=float, default=None, help='Scaling alpha for TIRA; effective scale is alpha / K. If unset, alpha=K')
+parser.add_argument('--tira_alpha', type=int, default=None, help='Scaling alpha for TIRA; effective scale is alpha / K. If unset, alpha=K')
 parser.add_argument('--tira_q_M', type=int, default=None, help='TIRA M used only for q_proj; fallback to tira_M when unset')
 parser.add_argument('--tira_q_K', type=int, default=None, help='TIRA K used only for q_proj; fallback to tira_K when unset')
 parser.add_argument('--tira_k_M', type=int, default=None, help='TIRA M used only for k_proj; fallback to tira_M when unset')
