@@ -14,9 +14,9 @@ WARMUP=${WARMUP:-"100"}
 TARGET_MODULES=${TARGET_MODULES:-"q_proj,k_proj,v_proj,up_proj,down_proj"}
 
 
-# Eval every 80 steps, keep 20 ckpts, pick best after full training
+# Eval every 100 steps, keep 5 ckpts, pick best after full training
 EVAL_STRATEGY="steps"
-EVAL_STEPS="80"
+EVAL_STEPS="100"
 SAVE_TOTAL_LIMIT="5"
 EARLY_STOP_PATIENCE="0"
 

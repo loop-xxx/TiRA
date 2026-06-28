@@ -1,11 +1,4 @@
 #!/bin/bash
-# Training script using commonsense_170k mixed dataset (same as original HiRA setup).
-# Run from the experiment/ directory.
-#
-# Usage:
-#   bash run_train.sh                  # default: tira
-#   PEFT=lora bash run_train.sh        # LoRA only (baseline)
-#   PEFT=hira bash run_train.sh        # HiRA baseline
 
 MODEL=${MODEL:-"./models/$1"}
 OUTPUT=${OUTPUT:-"results_tira"}
@@ -15,7 +8,6 @@ SEED=${SEED:-"36"}
 # Paper hyperparameters
 EPOCH=${EPOCH:-"2"}
 LR=${LR:-"$3"}
-LR_SCHEDULER_TYPE=${LR_SCHEDULER_TYPE:-"linear"}
 BATCH=${BATCH:-"32"}
 GRAD_ACC=${GRAD_ACC:-"1"}
 WARMUP=${WARMUP:-"100"}
@@ -43,7 +35,6 @@ if [ "$PEFT" = "lora" ]; then
         --target_modules "$TARGET_MODULES" \
         --epoch $EPOCH \
         --warmup $WARMUP \
-        --lr_scheduler_type $LR_SCHEDULER_TYPE \
         --weight_decay 0 \
         --lora_r $4 \
         --lora_alpha $4 \
@@ -67,7 +58,6 @@ elif [ "$PEFT" = "hira" ]; then
         --target_modules "$TARGET_MODULES" \
         --epoch $EPOCH \
         --warmup $WARMUP \
-        --lr_scheduler_type $LR_SCHEDULER_TYPE \
         --weight_decay 0 \
         --r_ab 32 \
         --eval_strategy $EVAL_STRATEGY \
@@ -89,7 +79,6 @@ elif [[ "$PEFT" == tira* ]]; then
         --target_modules "$TARGET_MODULES" \
         --epoch $EPOCH \
         --warmup $WARMUP \
-        --lr_scheduler_type $LR_SCHEDULER_TYPE \
         --weight_decay 0 \
         --tira_M $5 \
         --tira_K $6 \
