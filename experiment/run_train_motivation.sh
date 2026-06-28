@@ -2,12 +2,12 @@
 
 MODEL=${MODEL:-"./models/qwen-2-1.5b"}
 OUTPUT=${OUTPUT:-"results_tira"}
-PEFT=${PEFT:-"lora"}
+PEFT=${PEFT:-"$2"}
 DATASET=${DATASET:-"gsm8k-$1"}
 SEED=${SEED:-"36"}
 # Paper hyperparameters
 EPOCH=${EPOCH:-"2"}
-LR=${LR:-"1e-4"}
+LR=${LR:-"$3"}
 BATCH=${BATCH:-"160"}
 GRAD_ACC=${GRAD_ACC:-"1"}
 WARMUP=${WARMUP:-"100"}
@@ -36,8 +36,8 @@ if [ "$PEFT" = "lora" ]; then
         --epoch $EPOCH \
         --warmup $WARMUP \
         --weight_decay 0 \
-        --lora_r $2 \
-        --lora_alpha $2 \
+        --lora_r $4 \
+        --lora_alpha $4 \
         --lora_dropout 0.05 \
         --eval_strategy $EVAL_STRATEGY \
         --eval_steps $EVAL_STEPS \
@@ -80,8 +80,8 @@ elif [ "$PEFT" = "tira" ]; then
         --epoch $EPOCH \
         --warmup $WARMUP \
         --weight_decay 0 \
-        --tira_M 32 \
-        --tira_K 32 \
+        --tira_M $5 \
+        --tira_K $6 \
         --eval_strategy $EVAL_STRATEGY \
         --eval_steps $EVAL_STEPS \
         --save_total_limit $SAVE_TOTAL_LIMIT \
