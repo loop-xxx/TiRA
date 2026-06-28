@@ -1,13 +1,13 @@
 #!/bin/bash
 
-MODEL=${MODEL:-"./models/llama-3-8b"}
+MODEL=${MODEL:-"./models/qwen-2.5-3b"}
 OUTPUT=${OUTPUT:-"results_tira"}
-PEFT=${PEFT:-"tira"}
+PEFT=${PEFT:-"$1"}
 DATASET=${DATASET:-"meta_math"}
 SEED=${SEED:-"36"}
 # Paper hyperparameters
 EPOCH=${EPOCH:-"2"}
-LR=${LR:-"4e-5"}
+LR=${LR:-"5e-5"}
 BATCH=${BATCH:-"32"}
 GRAD_ACC=${GRAD_ACC:-"1"}
 WARMUP=${WARMUP:-"100"}

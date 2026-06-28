@@ -18,13 +18,15 @@ import jsonlines
 import torch
 import transformers
 from pytictoc import TicToc
-from models.get_models import print_trainable_parameters, get_tokenizer, get_prefix_tuning_models, get_hira_models, get_fft_models, get_lora_models, get_tira_models
+from models.get_models import print_trainable_parameters, get_tokenizer, get_prefix_tuning_models, get_hira_models, get_fft_models, get_lora_models, get_tira_models, get_tira_ablation_models
 import argparse
 from customized_trainer import customized_trainer
 
+TIRA_PEFT_TYPES = ['tira', 'tira-diagonal', 'tira-random-uniform', 'tira-random-balanced']
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--peft_type', type=str,
-                    choices=['prefix', 'hira', 'fft', 'lora', 'tira'])
+                    choices=['prefix', 'hira', 'fft', 'lora', *TIRA_PEFT_TYPES])
 parser.add_argument('--enable_grad_ckpt', action='store_true')
 parser.add_argument('--batch', type=int, default=32)
 parser.add_argument('--grad_acc', type=int, default=1)
@@ -85,6 +87,7 @@ parser.add_argument('--tira_up_M', type=int, default=None, help='TIRA M used onl
 parser.add_argument('--tira_up_K', type=int, default=None, help='TIRA K used only for up_proj; fallback to tira_K when unset')
 parser.add_argument('--tira_down_M', type=int, default=None, help='TIRA M used only for down_proj; fallback to tira_M when unset')
 parser.add_argument('--tira_down_K', type=int, default=None, help='TIRA K used only for down_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_placement_seed', type=int, default=0, help='Placement seed for random TIRA ablation variants')
 COMPUTE_DS_LENGTH = False
 args = parser.parse_args()
 if args.compute_rank or args.compute_norm:
@@ -165,6 +168,8 @@ if args.ckpt is not None and not args.resume:
             args.tira_down_M = dict_args['tira_down_M']
         if 'tira_down_K' in dict_args:
             args.tira_down_K = dict_args['tira_down_K']
+        if 'tira_placement_seed' in dict_args:
+            args.tira_placement_seed = dict_args['tira_placement_seed']
     else:
         print(f'WARNING: cannot find {output_jsonl}, using command-line args instead.')
 
@@ -194,7 +199,7 @@ if peft_type == 'hira':
     exp_name = exp_name + f'r_ab={args.r_ab}-'
     exp_name = exp_name + f'init={init_ab_}-'
     exp_name = exp_name + f'train={train_ab}-'
-elif peft_type == 'tira':
+elif peft_type in TIRA_PEFT_TYPES:
     exp_name = exp_name + f'M={args.tira_M}-K={args.tira_K}-'
 elif peft_type == 'lora':
     exp_name = exp_name + f'r={args.lora_r}-'
@@ -268,6 +273,28 @@ elif peft_type == 'tira':
                                                       tira_up_K=args.tira_up_K,
                                                       tira_down_M=args.tira_down_M,
                                                       tira_down_K=args.tira_down_K)
+elif peft_type in TIRA_PEFT_TYPES:
+    model, tokenizer, model_config = get_tira_ablation_models(load_bit=args.load_bit,
+                                                              model_name=model_name,
+                                                              enable_checkpoint=args.enable_grad_ckpt,
+                                                              target_modules=args.target_modules,
+                                                              tira_M=args.tira_M,
+                                                              tira_K=args.tira_K,
+                                                              tira_alpha=args.tira_alpha,
+                                                              tira_q_M=args.tira_q_M,
+                                                              tira_q_K=args.tira_q_K,
+                                                              tira_k_M=args.tira_k_M,
+                                                              tira_k_K=args.tira_k_K,
+                                                              tira_v_M=args.tira_v_M,
+                                                              tira_v_K=args.tira_v_K,
+                                                              tira_o_M=args.tira_o_M,
+                                                              tira_o_K=args.tira_o_K,
+                                                              tira_up_M=args.tira_up_M,
+                                                              tira_up_K=args.tira_up_K,
+                                                              tira_down_M=args.tira_down_M,
+                                                              tira_down_K=args.tira_down_K,
+                                                              tira_placement_seed=args.tira_placement_seed,
+                                                              peft_type=peft_type)
 elif peft_type == 'lora':
     model, tokenizer, model_config = get_lora_models(load_bit=args.load_bit,
                                                      model_name=model_name, enable_checkpoint=args.enable_grad_ckpt,

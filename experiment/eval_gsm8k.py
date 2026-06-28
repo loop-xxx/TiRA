@@ -74,9 +74,27 @@ def extract_last_answer_number(completion):
 
 
 def extract_r_value(folder_name: str) -> int:
-    """Extract LoRA rank r from folder name like ...-r=128-... for sorting."""
+    """Extract effective rank from folder name for sorting.
+
+    LoRA folders use ...-r=128-..., while TiRA folders use ...-M=32-K=32-...
+    and should be grouped by the equivalent rank K * M.
+    """
+    method_match = re.search(r'-(tira)-', folder_name, flags=re.IGNORECASE)
+    if method_match:
+        mk = re.search(r'M=(\d+)-K=(\d+)', folder_name, flags=re.IGNORECASE)
+        if mk:
+            m_val, k_val = int(mk.group(1)), int(mk.group(2))
+            return k_val * m_val
+        return MAX_INT
+
     match = re.search(r'(?:^|-)r=(\d+)(?:-|$)', folder_name)
     return int(match.group(1)) if match else MAX_INT
+
+
+def extract_peft_type(folder_name: str) -> str:
+    """Extract PEFT method from folder name."""
+    match = re.search(r'-(lora|tira)-', folder_name, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else 'unknown'
 
 
 def compute_accuracy(jsonl_path, answer_json):
@@ -118,11 +136,12 @@ for eval_path in eval_paths:
         print(f'No trainer_state.json files found in {eval_path} for task {eval_task}')
         continue
 
-    csv_header = ['r', 'eval_loss', 'acc']
+    csv_header = ['peft', 'r', 'eval_loss', 'acc']
     csv_data = []
 
     for json_file in tqdm(jsonl_files):
         print(json_file)
+        peft_type = extract_peft_type(json_file)
         r_value = extract_r_value(json_file)
         with open(json_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -135,11 +154,11 @@ for eval_path in eval_paths:
             print(f'No prediction jsonl found in {run_dir}')
             acc = ''
 
-        csv_row = [r_value, data['best_metric'], acc]
+        csv_row = [peft_type, r_value, data['best_metric'], acc]
         csv_data.append(csv_row)
 
     out_csv = f'{eval_path}/results_{eval_task}.csv'
-    csv_data.sort(key=lambda row: row[0])
+    csv_data.sort(key=lambda row: (row[0], row[1]))
     with open(out_csv, 'w', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(csv_header)

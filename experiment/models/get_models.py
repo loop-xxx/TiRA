@@ -161,6 +161,81 @@ def get_tira_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, loa
     return model, tokenizer, tira_config
 
 
+def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, load_bit=16,
+                             target_modules=None, tira_M=16, tira_K=16, tira_alpha=None,
+                             tira_q_M=None, tira_q_K=None,
+                             tira_k_M=None, tira_k_K=None,
+                             tira_v_M=None, tira_v_K=None,
+                             tira_o_M=None, tira_o_K=None,
+                             tira_up_M=None, tira_up_K=None,
+                             tira_down_M=None, tira_down_K=None,
+                             tira_placement_seed=0, peft_type=None):
+    """Load model with one of the TIRA placement ablation adapters."""
+    load_params = {}
+    if load_bit == 16:
+        load_params = {'torch_dtype': torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16}
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        load_in_8bit=(load_bit == 8),
+        **load_params,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+
+    for param in model.parameters():
+        param.requires_grad = False
+        if param.ndim == 1:
+            param.data = param.data.to(torch.float32)
+    if enable_checkpoint:
+        model.gradient_checkpointing_enable()
+    model.enable_input_require_grads()
+
+    class CastOutputToFloat(nn.Sequential):
+        def forward(self, x): return super().forward(x).to(torch.float32)
+    model.lm_head = CastOutputToFloat(model.lm_head)
+
+    if target_modules is not None:
+        target_modules = target_modules.split(',')
+    else:
+        target_modules = ["q_proj", "v_proj"]
+
+    if peft_type == "tira-diagonal":
+        from tira_diagonal import TiraDiagonalConfig as ConfigCls
+        from tira_diagonal import TiraDiagonalPeftModelForCausalLM as ModelCls
+    elif peft_type == "tira-random-uniform":
+        from tira_random_uniform import TiraRandomUniformConfig as ConfigCls
+        from tira_random_uniform import TiraRandomUniformPeftModelForCausalLM as ModelCls
+    elif peft_type == "tira-random-balanced":
+        from tira_random_balanced import TiraRandomBalancedConfig as ConfigCls
+        from tira_random_balanced import TiraRandomBalancedPeftModelForCausalLM as ModelCls
+    else:
+        raise ValueError(f"Unsupported TIRA ablation peft_type: {peft_type}")
+
+    tira_config = ConfigCls(
+        tira_M=tira_M,
+        tira_K=tira_K,
+        tira_alpha=tira_alpha,
+        tira_q_M=tira_q_M,
+        tira_q_K=tira_q_K,
+        tira_k_M=tira_k_M,
+        tira_k_K=tira_k_K,
+        tira_v_M=tira_v_M,
+        tira_v_K=tira_v_K,
+        tira_o_M=tira_o_M,
+        tira_o_K=tira_o_K,
+        tira_up_M=tira_up_M,
+        tira_up_K=tira_up_K,
+        tira_down_M=tira_down_M,
+        tira_down_K=tira_down_K,
+        tira_placement_seed=tira_placement_seed,
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+    )
+    model = ModelCls(model, tira_config)
+
+    print_trainable_parameters(model)
+    return model, tokenizer, tira_config
+
+
 def get_lora_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, load_bit=16,
                     lora_r=16, lora_target_modules=None, lora_alpha=32, lora_dropout=0.05):
     load_params = {}
