@@ -68,7 +68,7 @@ elif [ "$PEFT" = "hira" ]; then
     
 elif [[ "$PEFT" == tira* ]]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
-        --tira_placement_seed 0 \
+        --tira_placement_seed $2 \
         --peft_type $PEFT \
         --model_name $MODEL \
         --dataset $DATASET \
