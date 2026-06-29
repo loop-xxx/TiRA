@@ -81,7 +81,6 @@ class BaseTiraAblationModel(torch.nn.Module):
                 "M": module_M,
                 "K": module_K,
                 "alpha": module_alpha,
-                "placement_seed": getattr(config, "tira_placement_seed", 0),
             }
 
             if isinstance(target, BaseTiraAblationLayer):

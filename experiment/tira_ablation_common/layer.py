@@ -23,8 +23,14 @@ class BaseTiraAblationLayer:
         self.out_features = out_features
 
     @classmethod
-    def build_col_idx(cls, M: int, K: int, seed: int) -> torch.Tensor:
+    def build_col_idx(cls, M: int, K: int) -> torch.Tensor:
         raise NotImplementedError
+
+    @classmethod
+    def build_row_col_idx(cls, M: int, K: int):
+        m_idx = torch.arange(M)
+        row_idx = m_idx.unsqueeze(0).expand(K, M).clone()
+        return row_idx, cls.build_col_idx(M, K)
 
     def update_layer(
         self,
@@ -32,7 +38,6 @@ class BaseTiraAblationLayer:
         M: int,
         K: int,
         alpha: Optional[int] = None,
-        placement_seed: int = 0,
     ):
         assert self.out_features % M == 0, (
             f"d_out={self.out_features} must be divisible by M={M}"
@@ -59,10 +64,12 @@ class BaseTiraAblationLayer:
             adapter_name: nn.Parameter(torch.zeros(K, M, n_out, device=device, dtype=dtype))
         }))
 
-        col_idx = self.build_col_idx(M, K, placement_seed)
+        row_idx, col_idx = self.build_row_col_idx(M, K)
+        ri_buf = f"_tira_row_idx_{adapter_name}"
         ci_buf = f"_tira_col_idx_{adapter_name}"
+        self.register_buffer(ri_buf, row_idx)
         self.register_buffer(ci_buf, col_idx)
-        self._tira_buf_names[adapter_name] = (ci_buf,)
+        self._tira_buf_names[adapter_name] = (ri_buf, ci_buf)
         self.to(self.weight.device)
 
     @torch.no_grad()
@@ -75,9 +82,9 @@ class BaseTiraAblationLayer:
         a = self.tira_a[adapter_name]
         n_out = b.shape[2]
         n_in = a.shape[2]
-        col_idx = getattr(self, self._tira_buf_names[adapter_name][0])
-        m_idx = torch.arange(M, device=b.device)
-        row_idx = m_idx[None, :].expand(K, M)
+        ri_buf, ci_buf = self._tira_buf_names[adapter_name]
+        row_idx = getattr(self, ri_buf)
+        col_idx = getattr(self, ci_buf)
 
         blocks_all = torch.einsum("kmo,kmi->kmoi", b, a)
         delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=b.dtype, device=b.device)
@@ -90,17 +97,21 @@ class BaseTiraAblationLayer:
         x_flat: torch.Tensor,
         b: torch.Tensor,
         a: torch.Tensor,
+        row_idx: torch.Tensor,
         col_idx: torch.Tensor,
         M: int,
     ) -> torch.Tensor:
         n_in = a.shape[2]
+        n_out = b.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
         batch_size = x_blocks.shape[0]
-        selected = x_blocks[:, col_idx.reshape(-1), :].reshape(
-            batch_size, col_idx.shape[0], col_idx.shape[1], n_in
-        )
-        act = (selected * a.unsqueeze(0)).sum(dim=-1)
-        return torch.einsum("bkm,kmo->bmo", act, b).reshape(batch_size, self.out_features)
+        y_blocks = x_blocks.new_zeros(batch_size, M, n_out)
+        for k in range(col_idx.shape[0]):
+            selected = x_blocks[:, col_idx[k], :]
+            act = (selected * a[k].unsqueeze(0)).sum(dim=-1)
+            contrib = act.unsqueeze(-1) * b[k].unsqueeze(0)
+            y_blocks.index_add_(1, row_idx[k], contrib)
+        return y_blocks.reshape(batch_size, self.out_features)
 
 
 class BaseTiraAblationLinear(nn.Linear, BaseTiraAblationLayer):
@@ -114,7 +125,6 @@ class BaseTiraAblationLinear(nn.Linear, BaseTiraAblationLayer):
         M: int = 16,
         K: int = 16,
         alpha: int = None,
-        placement_seed: int = 0,
         bias: bool = True,
         **kwargs,
     ):
@@ -124,7 +134,7 @@ class BaseTiraAblationLinear(nn.Linear, BaseTiraAblationLayer):
         if self.bias is not None:
             self.bias.requires_grad = False
         nn.Linear.reset_parameters(self)
-        self.update_layer(adapter_name, M, K, alpha=alpha, placement_seed=placement_seed)
+        self.update_layer(adapter_name, M, K, alpha=alpha)
         self.active_adapter = adapter_name
 
     def merge(self):
@@ -162,10 +172,12 @@ class BaseTiraAblationLinear(nn.Linear, BaseTiraAblationLayer):
             K = self.tira_K[adapter_name]
             b = self.tira_b[adapter_name]
             a = self.tira_a[adapter_name]
-            col_idx = getattr(self, self._tira_buf_names[adapter_name][0])
+            ri_buf, ci_buf = self._tira_buf_names[adapter_name]
+            row_idx = getattr(self, ri_buf)
+            col_idx = getattr(self, ci_buf)
             orig_shape = x.shape
             x_flat = x.reshape(-1, self.in_features).to(b.dtype)
-            y_delta = self._adapter_forward(x_flat, b, a, col_idx, M)
+            y_delta = self._adapter_forward(x_flat, b, a, row_idx, col_idx, M)
             scale = self.tira_alpha[adapter_name] // K
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
         return result

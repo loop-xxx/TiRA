@@ -66,9 +66,8 @@ elif [ "$PEFT" = "hira" ]; then
         --early_stop_patience $EARLY_STOP_PATIENCE \
         --output_folder $OUTPUT \
     
-elif [[ "$PEFT" == tira* ]]; then
+elif [ "$PEFT" = "tira" ] || [ "$PEFT" = "tira-diagonal" ] || [ "$PEFT" = "tira-row-balanced" ]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
-        --tira_placement_seed $2 \
         --peft_type $PEFT \
         --model_name $MODEL \
         --dataset $DATASET \

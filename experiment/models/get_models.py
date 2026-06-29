@@ -169,7 +169,7 @@ def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=F
                              tira_o_M=None, tira_o_K=None,
                              tira_up_M=None, tira_up_K=None,
                              tira_down_M=None, tira_down_K=None,
-                             tira_placement_seed=0, peft_type=None):
+                             peft_type=None):
     """Load model with one of the TIRA placement ablation adapters."""
     load_params = {}
     if load_bit == 16:
@@ -201,12 +201,9 @@ def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=F
     if peft_type == "tira-diagonal":
         from tira_diagonal import TiraDiagonalConfig as ConfigCls
         from tira_diagonal import TiraDiagonalPeftModelForCausalLM as ModelCls
-    elif peft_type == "tira-random-uniform":
-        from tira_random_uniform import TiraRandomUniformConfig as ConfigCls
-        from tira_random_uniform import TiraRandomUniformPeftModelForCausalLM as ModelCls
-    elif peft_type == "tira-random-balanced":
-        from tira_random_balanced import TiraRandomBalancedConfig as ConfigCls
-        from tira_random_balanced import TiraRandomBalancedPeftModelForCausalLM as ModelCls
+    elif peft_type == "tira-row-balanced":
+        from tira_row_balanced import TiraRowBalancedConfig as ConfigCls
+        from tira_row_balanced import TiraRowBalancedPeftModelForCausalLM as ModelCls
     else:
         raise ValueError(f"Unsupported TIRA ablation peft_type: {peft_type}")
 
@@ -226,7 +223,6 @@ def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=F
         tira_up_K=tira_up_K,
         tira_down_M=tira_down_M,
         tira_down_K=tira_down_K,
-        tira_placement_seed=tira_placement_seed,
         target_modules=target_modules,
         task_type="CAUSAL_LM",
     )

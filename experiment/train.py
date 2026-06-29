@@ -22,7 +22,7 @@ from models.get_models import print_trainable_parameters, get_tokenizer, get_pre
 import argparse
 from customized_trainer import customized_trainer
 
-TIRA_PEFT_TYPES = ['tira', 'tira-diagonal', 'tira-random-uniform', 'tira-random-balanced']
+TIRA_PEFT_TYPES = ['tira', 'tira-diagonal', 'tira-row-balanced']
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--peft_type', type=str,
@@ -87,7 +87,6 @@ parser.add_argument('--tira_up_M', type=int, default=None, help='TIRA M used onl
 parser.add_argument('--tira_up_K', type=int, default=None, help='TIRA K used only for up_proj; fallback to tira_K when unset')
 parser.add_argument('--tira_down_M', type=int, default=None, help='TIRA M used only for down_proj; fallback to tira_M when unset')
 parser.add_argument('--tira_down_K', type=int, default=None, help='TIRA K used only for down_proj; fallback to tira_K when unset')
-parser.add_argument('--tira_placement_seed', type=int, default=0, help='Placement seed for random TIRA ablation variants')
 COMPUTE_DS_LENGTH = False
 args = parser.parse_args()
 if args.compute_rank or args.compute_norm:
@@ -168,8 +167,6 @@ if args.ckpt is not None and not args.resume:
             args.tira_down_M = dict_args['tira_down_M']
         if 'tira_down_K' in dict_args:
             args.tira_down_K = dict_args['tira_down_K']
-        if 'tira_placement_seed' in dict_args:
-            args.tira_placement_seed = dict_args['tira_placement_seed']
     else:
         print(f'WARNING: cannot find {output_jsonl}, using command-line args instead.')
 
@@ -293,7 +290,6 @@ elif peft_type in TIRA_PEFT_TYPES:
                                                               tira_up_K=args.tira_up_K,
                                                               tira_down_M=args.tira_down_M,
                                                               tira_down_K=args.tira_down_K,
-                                                              tira_placement_seed=args.tira_placement_seed,
                                                               peft_type=peft_type)
 elif peft_type == 'lora':
     model, tokenizer, model_config = get_lora_models(load_bit=args.load_bit,
