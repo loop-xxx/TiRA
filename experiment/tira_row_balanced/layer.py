@@ -38,6 +38,6 @@ class TiraRowBalancedLinear(BaseTiraAblationLinear):
         group_delta = torch.einsum("bkm,kmo->bko", act, b)
 
         group_rows = row_idx[:, 0]
-        y_blocks = x_blocks.new_zeros(x_blocks.shape[0], M, n_out)
+        y_blocks = group_delta.new_zeros(x_blocks.shape[0], M, n_out)
         y_blocks.index_add_(1, group_rows, group_delta)
         return y_blocks.reshape(-1, self.out_features)

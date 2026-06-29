@@ -105,11 +105,13 @@ class BaseTiraAblationLayer:
         n_out = b.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
         batch_size = x_blocks.shape[0]
-        y_blocks = x_blocks.new_zeros(batch_size, M, n_out)
+        y_blocks = None
         for k in range(col_idx.shape[0]):
             selected = x_blocks[:, col_idx[k], :]
             act = (selected * a[k].unsqueeze(0)).sum(dim=-1)
             contrib = act.unsqueeze(-1) * b[k].unsqueeze(0)
+            if y_blocks is None:
+                y_blocks = contrib.new_zeros(batch_size, M, n_out)
             y_blocks.index_add_(1, row_idx[k], contrib)
         return y_blocks.reshape(batch_size, self.out_features)
 
