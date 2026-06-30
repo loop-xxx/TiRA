@@ -81,7 +81,7 @@ elif [ "$PEFT" = "tira" ] || [ "$PEFT" = "tira-diagonal" ] || [ "$PEFT" = "tira-
         --warmup $WARMUP \
         --weight_decay 0 \
         --tira_M 32 \
-        --tira_L 1 \
+        --tira_L $2 \
         --eval_strategy $EVAL_STRATEGY \
         --eval_steps $EVAL_STEPS \
         --save_total_limit $SAVE_TOTAL_LIMIT \
