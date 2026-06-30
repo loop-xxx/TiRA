@@ -22,7 +22,7 @@ from models.get_models import print_trainable_parameters, get_tokenizer, get_pre
 import argparse
 from customized_trainer import customized_trainer
 
-TIRA_PEFT_TYPES = ['tira', 'tira-diagonal', 'tira-row-balanced']
+TIRA_PEFT_TYPES = ['tira', 'tira-diagonal']
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--peft_type', type=str,

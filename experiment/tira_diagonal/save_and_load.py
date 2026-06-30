@@ -1,4 +1,4 @@
-def get_tira_ablation_model_state_dict(model, state_dict=None, adapter_name="default"):
+def get_tira_diagonal_model_state_dict(model, state_dict=None, adapter_name="default"):
     config = model.peft_config[adapter_name]
     if state_dict is None:
         state_dict = model.state_dict()
@@ -35,7 +35,7 @@ def get_tira_ablation_model_state_dict(model, state_dict=None, adapter_name="def
     return to_return
 
 
-def set_tira_ablation_model_state_dict(model, peft_model_state_dict, adapter_name="default"):
+def set_tira_diagonal_model_state_dict(model, peft_model_state_dict, adapter_name="default"):
     state_dict = peft_model_state_dict
     if model.modules_to_save is not None:
         state_dict = {}

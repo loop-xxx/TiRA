@@ -201,9 +201,6 @@ def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=F
     if peft_type == "tira-diagonal":
         from tira_diagonal import TiraDiagonalConfig as ConfigCls
         from tira_diagonal import TiraDiagonalPeftModelForCausalLM as ModelCls
-    elif peft_type == "tira-row-balanced":
-        from tira_row_balanced import TiraRowBalancedConfig as ConfigCls
-        from tira_row_balanced import TiraRowBalancedPeftModelForCausalLM as ModelCls
     else:
         raise ValueError(f"Unsupported TIRA ablation peft_type: {peft_type}")
 
