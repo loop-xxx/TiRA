@@ -85,8 +85,8 @@ eval_task_json_map = {
 
 def extract_method_and_hyperparams(folder_name, source_path=None):
     """Extract (model, method, hparam_str, sort_key) from folder name.
-    Folder format: {output}/{model}-{dataset}-{peft_type}-lr=...-(M=..-K=..|r=..)-...
-    For tira: hparams = M=...-K=... ; otherwise hparams = r=... .
+    Folder format: {output}/{model}-{dataset}-{peft_type}-lr=...-(M=..-L=..|r=..)-...
+    For tira: hparams = M=...-L=... ; otherwise hparams = r=... .
     sort_key sorts by (model, method, then numeric hparams).
     """
     search_target = source_path if source_path is not None else folder_name
@@ -98,6 +98,11 @@ def extract_method_and_hyperparams(folder_name, source_path=None):
     method = method_match.group(1) if method_match else 'unknown'
 
     if method == 'tira':
+        ml = re.search(r'M=(\d+)-L=(\d+)', folder_name)
+        if ml:
+            m_val, l_val = int(ml.group(1)), int(ml.group(2))
+            k_val = l_val * m_val
+            return model, method, f'M={m_val}-L={l_val}', (model, method, k_val, m_val)
         mk = re.search(r'M=(\d+)-K=(\d+)', folder_name)
         if mk:
             m_val, k_val = int(mk.group(1)), int(mk.group(2))

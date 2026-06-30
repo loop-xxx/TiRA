@@ -100,13 +100,13 @@ def get_hira_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, loa
 
 
 def get_tira_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, load_bit=16,
-                    target_modules=None, tira_M=16, tira_K=16, tira_alpha=None,
-                    tira_q_M=None, tira_q_K=None,
-                    tira_k_M=None, tira_k_K=None,
-                    tira_v_M=None, tira_v_K=None,
-                    tira_o_M=None, tira_o_K=None,
-                    tira_up_M=None, tira_up_K=None,
-                    tira_down_M=None, tira_down_K=None):
+                    target_modules=None, tira_M=16, tira_L=1, tira_alpha=None,
+                    tira_q_M=None, tira_q_L=None,
+                    tira_k_M=None, tira_k_L=None,
+                    tira_v_M=None, tira_v_L=None,
+                    tira_o_M=None, tira_o_L=None,
+                    tira_up_M=None, tira_up_L=None,
+                    tira_down_M=None, tira_down_L=None):
     """Load model with TIRA adapter."""
     load_params = {}
     if load_bit == 16:
@@ -138,20 +138,20 @@ def get_tira_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, loa
     from tira import TiraConfig, TiraPeftModelForCausalLM
     tira_config = TiraConfig(
         tira_M=tira_M,
-        tira_K=tira_K,
+        tira_L=tira_L,
         tira_alpha=tira_alpha,
         tira_q_M=tira_q_M,
-        tira_q_K=tira_q_K,
+        tira_q_L=tira_q_L,
         tira_k_M=tira_k_M,
-        tira_k_K=tira_k_K,
+        tira_k_L=tira_k_L,
         tira_v_M=tira_v_M,
-        tira_v_K=tira_v_K,
+        tira_v_L=tira_v_L,
         tira_o_M=tira_o_M,
-        tira_o_K=tira_o_K,
+        tira_o_L=tira_o_L,
         tira_up_M=tira_up_M,
-        tira_up_K=tira_up_K,
+        tira_up_L=tira_up_L,
         tira_down_M=tira_down_M,
-        tira_down_K=tira_down_K,
+        tira_down_L=tira_down_L,
         target_modules=target_modules,
         task_type="CAUSAL_LM",
     )
@@ -162,13 +162,13 @@ def get_tira_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, loa
 
 
 def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=False, load_bit=16,
-                             target_modules=None, tira_M=16, tira_K=16, tira_alpha=None,
-                             tira_q_M=None, tira_q_K=None,
-                             tira_k_M=None, tira_k_K=None,
-                             tira_v_M=None, tira_v_K=None,
-                             tira_o_M=None, tira_o_K=None,
-                             tira_up_M=None, tira_up_K=None,
-                             tira_down_M=None, tira_down_K=None,
+                             target_modules=None, tira_M=16, tira_L=1, tira_alpha=None,
+                             tira_q_M=None, tira_q_L=None,
+                             tira_k_M=None, tira_k_L=None,
+                             tira_v_M=None, tira_v_L=None,
+                             tira_o_M=None, tira_o_L=None,
+                             tira_up_M=None, tira_up_L=None,
+                             tira_down_M=None, tira_down_L=None,
                              peft_type=None):
     """Load model with one of the TIRA placement ablation adapters."""
     load_params = {}
@@ -201,25 +201,31 @@ def get_tira_ablation_models(model_name="facebook/opt-1.3b", enable_checkpoint=F
     if peft_type == "tira-diagonal":
         from tira_diagonal import TiraDiagonalConfig as ConfigCls
         from tira_diagonal import TiraDiagonalPeftModelForCausalLM as ModelCls
+    elif peft_type == "tira-upper-triangular":
+        from tira_upper_triangular import TiraUpperTriangularConfig as ConfigCls
+        from tira_upper_triangular import TiraUpperTriangularPeftModelForCausalLM as ModelCls
+    elif peft_type == "tira-lower-triangular":
+        from tira_lower_triangular import TiraLowerTriangularConfig as ConfigCls
+        from tira_lower_triangular import TiraLowerTriangularPeftModelForCausalLM as ModelCls
     else:
         raise ValueError(f"Unsupported TIRA ablation peft_type: {peft_type}")
 
     tira_config = ConfigCls(
         tira_M=tira_M,
-        tira_K=tira_K,
+        tira_L=tira_L,
         tira_alpha=tira_alpha,
         tira_q_M=tira_q_M,
-        tira_q_K=tira_q_K,
+        tira_q_L=tira_q_L,
         tira_k_M=tira_k_M,
-        tira_k_K=tira_k_K,
+        tira_k_L=tira_k_L,
         tira_v_M=tira_v_M,
-        tira_v_K=tira_v_K,
+        tira_v_L=tira_v_L,
         tira_o_M=tira_o_M,
-        tira_o_K=tira_o_K,
+        tira_o_L=tira_o_L,
         tira_up_M=tira_up_M,
-        tira_up_K=tira_up_K,
+        tira_up_L=tira_up_L,
         tira_down_M=tira_down_M,
-        tira_down_K=tira_down_K,
+        tira_down_L=tira_down_L,
         target_modules=target_modules,
         task_type="CAUSAL_LM",
     )

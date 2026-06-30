@@ -1,16 +1,14 @@
 """TIRA: Tiled Rank-1 Adaptation for High-Rank Parameter-Efficient Fine-Tuning.
 
-Block-structured high-rank adaptation using K groups with staggered
-diagonal shift. Each group covers one diagonal band with M rank-1 blocks.
-K >= M and must be a multiple of M, achieving up to rank
-M^2 * min(K/M, n_out, n_in) with only K*(d_out+d_in) parameters.
+Block-structured high-rank adaptation where each covered subblock has
+rank upper bound L. It achieves up to rank M^2 * min(L, n_out, n_in).
 
 Usage (standalone):
     from tira import TiraConfig, TiraPeftModel
 
     config = TiraConfig(
         tira_M=16,
-        tira_K=16,
+        tira_L=1,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
     model = TiraPeftModel(base_model, config)

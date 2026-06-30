@@ -83,27 +83,28 @@ class TiraModel(torch.nn.Module):
             if target_module_found:
                 if key.endswith("q_proj"):
                     module_M = config.tira_q_M if config.tira_q_M is not None else config.tira_M
-                    module_K = config.tira_q_K if config.tira_q_K is not None else config.tira_K
+                    module_L = config.tira_q_L if config.tira_q_L is not None else config.tira_L
                 elif key.endswith("k_proj"):
                     module_M = config.tira_k_M if config.tira_k_M is not None else config.tira_M
-                    module_K = config.tira_k_K if config.tira_k_K is not None else config.tira_K
+                    module_L = config.tira_k_L if config.tira_k_L is not None else config.tira_L
                 elif key.endswith("v_proj"):
                     module_M = config.tira_v_M if config.tira_v_M is not None else config.tira_M
-                    module_K = config.tira_v_K if config.tira_v_K is not None else config.tira_K
+                    module_L = config.tira_v_L if config.tira_v_L is not None else config.tira_L
                 elif key.endswith("o_proj"):
                     module_M = config.tira_o_M if config.tira_o_M is not None else config.tira_M
-                    module_K = config.tira_o_K if config.tira_o_K is not None else config.tira_K
+                    module_L = config.tira_o_L if config.tira_o_L is not None else config.tira_L
                 elif key.endswith("up_proj"):
                     module_M = config.tira_up_M if config.tira_up_M is not None else config.tira_M
-                    module_K = config.tira_up_K if config.tira_up_K is not None else config.tira_K
+                    module_L = config.tira_up_L if config.tira_up_L is not None else config.tira_L
                 elif key.endswith("down_proj"):
                     module_M = config.tira_down_M if config.tira_down_M is not None else config.tira_M
-                    module_K = config.tira_down_K if config.tira_down_K is not None else config.tira_K
+                    module_L = config.tira_down_L if config.tira_down_L is not None else config.tira_L
                 else:
                     module_M = config.tira_M
-                    module_K = config.tira_K
+                    module_L = config.tira_L
+                module_K = module_L * module_M
                 module_alpha = config.tira_alpha if config.tira_alpha is not None else module_K
-                kwargs = {"M": module_M, "K": module_K, "alpha": module_alpha}
+                kwargs = {"M": module_M, "L": module_L, "alpha": module_alpha}
 
                 if not is_target_modules_in_base_model:
                     is_target_modules_in_base_model = True

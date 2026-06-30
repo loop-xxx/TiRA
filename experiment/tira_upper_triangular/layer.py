@@ -7,9 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class TiraLayer:
-    """Mixin class holding block-wise rank-L TIRA adapter parameters."""
-
+class TiraUpperTriangularLayer:
     def __init__(self, in_features: int, out_features: int):
         self.tira_b = nn.ParameterDict({})
         self.tira_a = nn.ParameterDict({})
@@ -22,19 +20,9 @@ class TiraLayer:
         self.in_features = in_features
         self.out_features = out_features
 
-    def update_layer(
-        self,
-        adapter_name: str,
-        M: int,
-        L: int,
-        alpha: Optional[int] = None,
-    ):
-        assert self.out_features % M == 0, (
-            f"d_out={self.out_features} must be divisible by M={M}"
-        )
-        assert self.in_features % M == 0, (
-            f"d_in={self.in_features} must be divisible by M={M}"
-        )
+    def update_layer(self, adapter_name: str, M: int, L: int, alpha: Optional[int] = None):
+        assert self.out_features % M == 0, f"d_out={self.out_features} must be divisible by M={M}"
+        assert self.in_features % M == 0, f"d_in={self.in_features} must be divisible by M={M}"
         assert L >= 1, f"L={L} must be >= 1"
 
         self.tira_M[adapter_name] = M
@@ -46,20 +34,31 @@ class TiraLayer:
         device = self.weight.device
         dtype = self.weight.dtype
 
-        a_param = nn.Parameter(torch.empty(M, M, L, n_in, device=device, dtype=dtype))
+        row_idx, col_idx = self._build_indices(M)
+        num_blocks = row_idx.numel()
+        a_param = nn.Parameter(torch.empty(num_blocks, L, n_in, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(a_param, a=math.sqrt(5))
         self.tira_a.update(nn.ParameterDict({adapter_name: a_param}))
         self.tira_b.update(nn.ParameterDict({
-            adapter_name: nn.Parameter(torch.zeros(M, M, L, n_out, device=device, dtype=dtype))
+            adapter_name: nn.Parameter(torch.zeros(num_blocks, L, n_out, device=device, dtype=dtype))
         }))
 
-        offset_idx = torch.arange(M)
-        row_idx = torch.arange(M)
-        col_idx = (row_idx.unsqueeze(0) + offset_idx.unsqueeze(1)) % M
+        row_buf = f"_tira_row_idx_{adapter_name}"
         col_buf = f"_tira_col_idx_{adapter_name}"
+        self.register_buffer(row_buf, row_idx)
         self.register_buffer(col_buf, col_idx)
-        self._tira_buf_names[adapter_name] = col_buf
+        self._tira_buf_names[adapter_name] = (row_buf, col_buf)
         self.to(self.weight.device)
+
+    @staticmethod
+    def _build_indices(M: int):
+        rows = []
+        cols = []
+        for offset in range(M):
+            for row in range(M - offset):
+                rows.append(row)
+                cols.append(row + offset)
+        return torch.tensor(rows, dtype=torch.long), torch.tensor(cols, dtype=torch.long)
 
     @torch.no_grad()
     def delta_weight(self, adapter_name: str = None) -> torch.Tensor:
@@ -69,20 +68,21 @@ class TiraLayer:
         L = self.tira_L[adapter_name]
         b = self.tira_b[adapter_name]
         a = self.tira_a[adapter_name]
-        n_out = b.shape[3]
-        n_in = a.shape[3]
+        n_out = b.shape[2]
+        n_in = a.shape[2]
+        row_buf, col_buf = self._tira_buf_names[adapter_name]
+        row_idx = getattr(self, row_buf)
+        col_idx = getattr(self, col_buf)
 
-        blocks_all = torch.einsum("kmlo,kmli->kmoi", b, a)
+        blocks_all = torch.einsum("plo,pli->poi", b, a)
         delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=b.dtype, device=b.device)
-        rows = torch.arange(M, device=b.device).unsqueeze(0).expand(M, M)
-        col_idx = getattr(self, self._tira_buf_names[adapter_name])
-        delta_blocks.index_put_((rows, col_idx), blocks_all, accumulate=False)
+        delta_blocks.index_put_((row_idx, col_idx), blocks_all, accumulate=False)
         delta = delta_blocks.permute(0, 2, 1, 3).reshape(self.out_features, self.in_features)
         return delta * (self.tira_alpha[adapter_name] / (L * M))
 
 
-class TiraLinear(nn.Linear, TiraLayer):
-    """nn.Linear with block-wise rank-L TIRA adapter."""
+class TiraUpperTriangularLinear(nn.Linear, TiraUpperTriangularLayer):
+    """TIRA ablation that only writes rank-L blocks on or above the block diagonal."""
 
     def __init__(
         self,
@@ -96,7 +96,7 @@ class TiraLinear(nn.Linear, TiraLayer):
         **kwargs,
     ):
         nn.Linear.__init__(self, in_features, out_features, bias=bias)
-        TiraLayer.__init__(self, in_features=in_features, out_features=out_features)
+        TiraUpperTriangularLayer.__init__(self, in_features=in_features, out_features=out_features)
         self.weight.requires_grad = False
         if self.bias is not None:
             self.bias.requires_grad = False
@@ -123,15 +123,15 @@ class TiraLinear(nn.Linear, TiraLayer):
             self._cached_delta = None
             self.merged = False
 
-    def _adapter_forward(self, x_flat, b, a, col_idx, M):
-        n_in = a.shape[3]
-        n_out = b.shape[3]
+    def _adapter_forward(self, x_flat, b, a, row_idx, col_idx, M):
+        n_in = a.shape[2]
+        n_out = b.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
-        y_blocks = x_blocks.new_zeros(x_blocks.shape[0], M, n_out)
-        for offset in range(M):
-            selected = x_blocks.index_select(1, col_idx[offset])
-            act = torch.einsum("bmi,mli->bml", selected, a[offset])
-            y_blocks = y_blocks + torch.einsum("bml,mlo->bmo", act, b[offset])
+        selected = x_blocks.index_select(1, col_idx)
+        act = torch.einsum("bpi,pli->bpl", selected, a)
+        contrib = torch.einsum("bpl,plo->bpo", act, b)
+        y_blocks = contrib.new_zeros(x_blocks.shape[0], M, n_out)
+        y_blocks.index_add_(1, row_idx, contrib)
         return y_blocks.reshape(-1, self.out_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -150,10 +150,12 @@ class TiraLinear(nn.Linear, TiraLayer):
             L = self.tira_L[adapter_name]
             b = self.tira_b[adapter_name]
             a = self.tira_a[adapter_name]
-            col_idx = getattr(self, self._tira_buf_names[adapter_name])
+            row_buf, col_buf = self._tira_buf_names[adapter_name]
+            row_idx = getattr(self, row_buf)
+            col_idx = getattr(self, col_buf)
             orig_shape = x.shape
             x_flat = x.reshape(-1, self.in_features).to(b.dtype)
-            y_delta = self._adapter_forward(x_flat, b, a, col_idx, M)
+            y_delta = self._adapter_forward(x_flat, b, a, row_idx, col_idx, M)
             scale = self.tira_alpha[adapter_name] / (L * M)
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
         return result

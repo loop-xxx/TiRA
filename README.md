@@ -94,7 +94,7 @@ python train.py \
   --warmup 100 \
   --weight_decay 0 \
   --tira_M 32 \
-  --tira_K 32 \
+  --tira_L 1 \
   --eval_strategy steps \
   --eval_steps 80 \
   --save_total_limit 5 \

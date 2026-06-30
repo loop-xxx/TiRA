@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument(
         "--no_scale",
         action="store_true",
-        help="Do not apply TIRA alpha/K scaling before SVD. Rank-energy metrics are unchanged by scaling.",
+        help="Do not apply TIRA alpha/K scaling before SVD, where K=L*M. Rank-energy metrics are unchanged by scaling.",
     )
     return parser.parse_args()
 
@@ -216,23 +216,42 @@ def extract_layer_module(key: str):
 
 
 def build_delta_from_tira(a: torch.Tensor, b: torch.Tensor, alpha: Optional[float], apply_scale: bool):
-    K, M, n_in = a.shape
-    _, _, n_out = b.shape
-    delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=torch.float32)
-
     a = a.to(torch.float32)
     b = b.to(torch.float32)
 
-    for k in range(K):
-        for m in range(M):
-            col = (m + k) % M
-            delta_blocks[m, col] += torch.outer(b[k, m], a[k, m])
+    if a.ndim == 4:
+        M, _, L, n_in = a.shape
+        n_out = b.shape[3]
+        K = L * M
+        delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=torch.float32)
+        blocks_all = torch.einsum("kmlo,kmli->kmoi", b, a)
+        rows = torch.arange(M).unsqueeze(0).expand(M, M)
+        offsets = torch.arange(M)
+        cols = (torch.arange(M).unsqueeze(0) + offsets.unsqueeze(1)) % M
+        delta_blocks.index_put_((rows, cols), blocks_all, accumulate=False)
+    else:
+        K, M, n_in = a.shape
+        L = max(1, K // M)
+        n_out = b.shape[2]
+        delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=torch.float32)
+        for k in range(K):
+            for m in range(M):
+                col = (m + k) % M
+                delta_blocks[m, col] += torch.outer(b[k, m], a[k, m])
 
     delta = delta_blocks.permute(0, 2, 1, 3).reshape(M * n_out, M * n_in)
     if apply_scale:
         scale = float(K if alpha is None else alpha) / float(K)
         delta = delta * scale
-    return delta
+    return delta, K, M, L, n_in, n_out
+
+
+def config_tira_l(cfg: dict):
+    if cfg.get("tira_L") is not None:
+        return cfg.get("tira_L")
+    if cfg.get("tira_K") is not None and cfg.get("tira_M") is not None:
+        return max(1, int(cfg["tira_K"]) // int(cfg["tira_M"]))
+    return None
 
 
 def parse_energy_thresholds(raw: str) -> List[float]:
@@ -312,10 +331,12 @@ def analyze_checkpoint(
 
             a = item["a"]
             b = item["b"]
-            K, M, n_in = a.shape
-            _, _, n_out = b.shape
-            alpha = get_alpha_for_module(cfg, module_name, K)
-            delta = build_delta_from_tira(a, b, alpha=alpha, apply_scale=apply_scale)
+            if a.ndim == 4:
+                K_for_alpha = a.shape[0] * a.shape[2]
+            else:
+                K_for_alpha = a.shape[0]
+            alpha = get_alpha_for_module(cfg, module_name, K_for_alpha)
+            delta, K, M, L, n_in, n_out = build_delta_from_tira(a, b, alpha=alpha, apply_scale=apply_scale)
             singular_values = torch.linalg.svdvals(delta)
             singular_values = torch.sort(singular_values, descending=True).values
 
@@ -329,6 +350,7 @@ def analyze_checkpoint(
                 "module": module_name,
                 "K": int(K),
                 "M": int(M),
+                "L": int(L),
                 "n_out": int(n_out),
                 "n_in": int(n_in),
                 "delta_rows": int(delta.shape[0]),
@@ -391,7 +413,7 @@ def summarize_rows(detail_rows: Sequence[dict], energy_thresholds: Sequence[floa
             "best_metric": rows[0].get("best_metric", ""),
             "base_model": rows[0].get("base_model", ""),
             "tira_M": rows[0].get("tira_M", ""),
-            "tira_K": rows[0].get("tira_K", ""),
+            "tira_L": rows[0].get("tira_L", ""),
             "mean_effective_rank_tau": mean(eff),
             "median_effective_rank_tau": median(eff),
             "max_effective_rank_tau": max(eff),
@@ -445,6 +467,7 @@ def enrich_rows(
     root_dir: Optional[str],
 ):
     run_name = os.path.basename(os.path.normpath(run.run_dir))
+    tira_l = config_tira_l(cfg)
     for row in rows:
         row.update(
             {
@@ -457,7 +480,7 @@ def enrich_rows(
                 "base_model": cfg.get("base_model_name_or_path"),
                 "peft_type": cfg.get("peft_type"),
                 "tira_M": cfg.get("tira_M"),
-                "tira_K": cfg.get("tira_K"),
+                "tira_L": tira_l,
                 "relative_run_dir": os.path.relpath(run.run_dir, root_dir) if root_dir else run_name,
                 "relative_checkpoint": os.path.relpath(run.checkpoint_dir, root_dir)
                 if root_dir
@@ -506,7 +529,7 @@ def analyze_runs(
                     "source": run.source,
                     "base_model": cfg.get("base_model_name_or_path"),
                     "tira_M": cfg.get("tira_M"),
-                    "tira_K": cfg.get("tira_K"),
+                    "tira_L": config_tira_l(cfg),
                     "num_rows": len(rows),
                 }
             )
@@ -573,11 +596,12 @@ def main():
         "base_model",
         "peft_type",
         "tira_M",
-        "tira_K",
+        "tira_L",
         "layer",
         "module",
         "K",
         "M",
+        "L",
         "rank_upper_bound",
         "effective_rank_tau",
         "stable_rank",
@@ -596,7 +620,7 @@ def main():
         "best_metric",
         "base_model",
         "tira_M",
-        "tira_K",
+        "tira_L",
         "mean_effective_rank_tau",
         "median_effective_rank_tau",
         "max_effective_rank_tau",

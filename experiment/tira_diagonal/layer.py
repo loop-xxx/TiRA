@@ -12,7 +12,7 @@ class TiraDiagonalLayer:
         self.tira_b = nn.ParameterDict({})
         self.tira_a = nn.ParameterDict({})
         self.tira_M = {}
-        self.tira_K = {}
+        self.tira_L = {}
         self.tira_alpha = {}
         self.merged = False
         self.disable_adapters = False
@@ -23,7 +23,7 @@ class TiraDiagonalLayer:
         self,
         adapter_name: str,
         M: int,
-        K: int,
+        L: int,
         alpha: Optional[int] = None,
     ):
         assert self.out_features % M == 0, (
@@ -32,23 +32,22 @@ class TiraDiagonalLayer:
         assert self.in_features % M == 0, (
             f"d_in={self.in_features} must be divisible by M={M}"
         )
-        assert K >= M, f"K={K} must be >= M={M}"
-        assert K % M == 0, f"K={K} must be a multiple of M={M}"
+        assert L >= 1, f"L={L} must be >= 1"
 
         self.tira_M[adapter_name] = M
-        self.tira_K[adapter_name] = K
-        self.tira_alpha[adapter_name] = K if alpha is None else alpha
+        self.tira_L[adapter_name] = L
+        self.tira_alpha[adapter_name] = L * M if alpha is None else alpha
 
         n_out = self.out_features // M
         n_in = self.in_features // M
         device = self.weight.device
         dtype = self.weight.dtype
 
-        a_param = nn.Parameter(torch.empty(K, M, n_in, device=device, dtype=dtype))
+        a_param = nn.Parameter(torch.empty(M, L, n_in, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(a_param, a=math.sqrt(5))
         self.tira_a.update(nn.ParameterDict({adapter_name: a_param}))
         self.tira_b.update(nn.ParameterDict({
-            adapter_name: nn.Parameter(torch.zeros(K, M, n_out, device=device, dtype=dtype))
+            adapter_name: nn.Parameter(torch.zeros(M, L, n_out, device=device, dtype=dtype))
         }))
         self.to(self.weight.device)
 
@@ -58,22 +57,22 @@ class TiraDiagonalLayer:
             adapter_name = self.active_adapter
 
         M = self.tira_M[adapter_name]
-        K = self.tira_K[adapter_name]
+        L = self.tira_L[adapter_name]
         b = self.tira_b[adapter_name]
         a = self.tira_a[adapter_name]
         n_out = b.shape[2]
         n_in = a.shape[2]
 
-        diag_blocks = torch.einsum("kmo,kmi->moi", b, a)
+        diag_blocks = torch.einsum("mlo,mli->moi", b, a)
         delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=b.dtype, device=b.device)
         idx = torch.arange(M, device=b.device)
         delta_blocks[idx, idx] = diag_blocks
         delta = delta_blocks.permute(0, 2, 1, 3).reshape(self.out_features, self.in_features)
-        return delta * (self.tira_alpha[adapter_name] // K)
+        return delta * (self.tira_alpha[adapter_name] / (L * M))
 
 
 class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
-    """TIRA ablation with all subblocks placed on the main block diagonal."""
+    """TIRA ablation with rank-L subblocks placed on the main block diagonal."""
 
     def __init__(
         self,
@@ -81,7 +80,7 @@ class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
         in_features: int,
         out_features: int,
         M: int = 16,
-        K: int = 16,
+        L: int = 1,
         alpha: int = None,
         bias: bool = True,
         **kwargs,
@@ -92,7 +91,7 @@ class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
         if self.bias is not None:
             self.bias.requires_grad = False
         nn.Linear.reset_parameters(self)
-        self.update_layer(adapter_name, M, K, alpha=alpha)
+        self.update_layer(adapter_name, M, L, alpha=alpha)
         self.active_adapter = adapter_name
 
     def merge(self):
@@ -123,12 +122,9 @@ class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
     ) -> torch.Tensor:
         n_in = a.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
-        act = torch.bmm(
-            x_blocks.permute(1, 0, 2),
-            a.permute(1, 2, 0),
-        )
-        y_delta = torch.bmm(act, b.permute(1, 0, 2))
-        return y_delta.permute(1, 0, 2).reshape(-1, self.out_features)
+        act = torch.einsum("bmi,mli->bml", x_blocks, a)
+        y_delta = torch.einsum("bml,mlo->bmo", act, b)
+        return y_delta.reshape(-1, self.out_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         previous_dtype = x.dtype
@@ -143,12 +139,12 @@ class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
         adapter_name = self.active_adapter
         if adapter_name in self.tira_b:
             M = self.tira_M[adapter_name]
-            K = self.tira_K[adapter_name]
+            L = self.tira_L[adapter_name]
             b = self.tira_b[adapter_name]
             a = self.tira_a[adapter_name]
             orig_shape = x.shape
             x_flat = x.reshape(-1, self.in_features).to(b.dtype)
             y_delta = self._adapter_forward(x_flat, b, a, M)
-            scale = self.tira_alpha[adapter_name] // K
+            scale = self.tira_alpha[adapter_name] / (L * M)
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
         return result

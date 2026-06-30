@@ -76,11 +76,15 @@ def extract_last_answer_number(completion):
 def extract_r_value(folder_name: str) -> int:
     """Extract effective rank from folder name for sorting.
 
-    LoRA folders use ...-r=128-..., while TiRA folders use ...-M=32-K=32-...
-    and should be grouped by the equivalent rank K * M.
+    LoRA folders use ...-r=128-..., while TiRA folders use ...-M=32-L=1-...
+    and should be grouped by the equivalent rank K * M, where K=L*M.
     """
     method_match = re.search(r'-(tira)-', folder_name, flags=re.IGNORECASE)
     if method_match:
+        ml = re.search(r'M=(\d+)-L=(\d+)', folder_name, flags=re.IGNORECASE)
+        if ml:
+            m_val, l_val = int(ml.group(1)), int(ml.group(2))
+            return l_val * m_val * m_val
         mk = re.search(r'M=(\d+)-K=(\d+)', folder_name, flags=re.IGNORECASE)
         if mk:
             m_val, k_val = int(mk.group(1)), int(mk.group(2))

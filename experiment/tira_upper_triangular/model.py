@@ -7,10 +7,10 @@ import torch
 import torch.nn as nn
 
 from hira.utils import ModulesToSaveWrapper, _freeze_adapter, _get_submodules
-from .layer import TiraDiagonalLayer, TiraDiagonalLinear
+from .layer import TiraUpperTriangularLayer, TiraUpperTriangularLinear
 
 
-def mark_only_tira_diagonal_as_trainable(model: nn.Module, bias: str = "none") -> None:
+def mark_only_tira_upper_triangular_as_trainable(model: nn.Module, bias: str = "none") -> None:
     for n, p in model.named_parameters():
         if "tira_" not in n:
             p.requires_grad = False
@@ -23,13 +23,13 @@ def mark_only_tira_diagonal_as_trainable(model: nn.Module, bias: str = "none") -
         return
     if bias == "tira_only":
         for m in model.modules():
-            if isinstance(m, TiraDiagonalLayer) and hasattr(m, "bias") and m.bias is not None:
+            if isinstance(m, TiraUpperTriangularLayer) and hasattr(m, "bias") and m.bias is not None:
                 m.bias.requires_grad = True
         return
     raise NotImplementedError(f"Unsupported bias type: {bias}")
 
 
-class TiraDiagonalModel(torch.nn.Module):
+class TiraUpperTriangularModel(torch.nn.Module):
     def __init__(self, model, config, adapter_name):
         super().__init__()
         self.model = model
@@ -41,7 +41,7 @@ class TiraDiagonalModel(torch.nn.Module):
         if config is not None:
             self.peft_config[adapter_name] = config
         self._find_and_replace(adapter_name)
-        mark_only_tira_diagonal_as_trainable(self.model, self.peft_config[adapter_name].bias)
+        mark_only_tira_upper_triangular_as_trainable(self.model, self.peft_config[adapter_name].bias)
         if self.peft_config[adapter_name].inference_mode:
             _freeze_adapter(self.model, adapter_name)
 
@@ -78,10 +78,10 @@ class TiraDiagonalModel(torch.nn.Module):
             module_alpha = config.tira_alpha if config.tira_alpha is not None else module_K
             kwargs = {"M": module_M, "L": module_L, "alpha": module_alpha}
 
-            if isinstance(target, TiraDiagonalLayer):
+            if isinstance(target, TiraUpperTriangularLayer):
                 target.update_layer(adapter_name, **kwargs)
             elif isinstance(target, torch.nn.Linear):
-                new_module = TiraDiagonalLinear(
+                new_module = TiraUpperTriangularLinear(
                     adapter_name,
                     target.in_features,
                     target.out_features,
@@ -124,7 +124,7 @@ class TiraDiagonalModel(torch.nn.Module):
 
     def _set_adapter_layers(self, enabled=True):
         for module in self.model.modules():
-            if isinstance(module, TiraDiagonalLayer):
+            if isinstance(module, TiraUpperTriangularLayer):
                 module.disable_adapters = not enabled
 
     def enable_adapter_layers(self):
@@ -135,7 +135,7 @@ class TiraDiagonalModel(torch.nn.Module):
 
     def set_adapter(self, adapter_name):
         for module in self.model.modules():
-            if isinstance(module, TiraDiagonalLayer):
+            if isinstance(module, TiraUpperTriangularLayer):
                 if module.merged:
                     warnings.warn("Adapter cannot be set when the model is merged. Unmerging first.")
                     module.unmerge()
@@ -143,12 +143,12 @@ class TiraDiagonalModel(torch.nn.Module):
 
     def merge_adapter(self):
         for module in self.model.modules():
-            if isinstance(module, TiraDiagonalLayer):
+            if isinstance(module, TiraUpperTriangularLayer):
                 module.merge()
 
     def unmerge_adapter(self):
         for module in self.model.modules():
-            if isinstance(module, TiraDiagonalLayer):
+            if isinstance(module, TiraUpperTriangularLayer):
                 module.unmerge()
 
     def merge_and_unload(self):
@@ -158,7 +158,7 @@ class TiraDiagonalModel(torch.nn.Module):
                 parent, target, target_name = _get_submodules(self.model, key)
             except AttributeError:
                 continue
-            if isinstance(target, TiraDiagonalLayer):
+            if isinstance(target, TiraUpperTriangularLayer):
                 new_module = torch.nn.Linear(
                     target.in_features,
                     target.out_features,

@@ -66,9 +66,9 @@ elif [ "$PEFT" = "hira" ]; then
         --early_stop_patience $EARLY_STOP_PATIENCE \
         --output_folder $OUTPUT \
     
-elif [ "$PEFT" = "tira" ] || [ "$PEFT" = "tira-diagonal" ]; then
+elif [ "$PEFT" = "tira" ] || [ "$PEFT" = "tira-diagonal" ] || [ "$PEFT" = "tira-upper-triangular" ] || [ "$PEFT" = "tira-lower-triangular" ]; then
     CUDA_VISIBLE_DEVICES=0 python train.py \
-        --peft_type tira \
+        --peft_type $PEFT \
         --model_name $MODEL \
         --dataset $DATASET \
         --seed $SEED \
@@ -81,7 +81,7 @@ elif [ "$PEFT" = "tira" ] || [ "$PEFT" = "tira-diagonal" ]; then
         --warmup $WARMUP \
         --weight_decay 0 \
         --tira_M $5 \
-        --tira_K $6 \
+        --tira_L $6 \
         --eval_strategy $EVAL_STRATEGY \
         --eval_steps $EVAL_STEPS \
         --save_total_limit $SAVE_TOTAL_LIMIT \

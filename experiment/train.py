@@ -22,7 +22,7 @@ from models.get_models import print_trainable_parameters, get_tokenizer, get_pre
 import argparse
 from customized_trainer import customized_trainer
 
-TIRA_PEFT_TYPES = ['tira', 'tira-diagonal']
+TIRA_PEFT_TYPES = ['tira', 'tira-diagonal', 'tira-upper-triangular', 'tira-lower-triangular']
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--peft_type', type=str,
@@ -73,20 +73,20 @@ parser.add_argument('--resume', action='store_true',
                     help='Resume training from --ckpt instead of running inference')
 # TIRA arguments
 parser.add_argument('--tira_M', type=int, default=16, help='Default number of block segments M for TIRA')
-parser.add_argument('--tira_K', type=int, default=8, help='Default number of parallel branches K for TIRA')
-parser.add_argument('--tira_alpha', type=int, default=None, help='Scaling alpha for TIRA; effective scale is alpha / K. If unset, alpha=K')
+parser.add_argument('--tira_L', type=int, default=1, help='Default subblock rank upper bound L for TIRA')
+parser.add_argument('--tira_alpha', type=int, default=None, help='Scaling alpha for TIRA; effective scale is alpha / (L*M). If unset, alpha=L*M')
 parser.add_argument('--tira_q_M', type=int, default=None, help='TIRA M used only for q_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_q_K', type=int, default=None, help='TIRA K used only for q_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_q_L', type=int, default=None, help='TIRA L used only for q_proj; fallback to tira_L when unset')
 parser.add_argument('--tira_k_M', type=int, default=None, help='TIRA M used only for k_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_k_K', type=int, default=None, help='TIRA K used only for k_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_k_L', type=int, default=None, help='TIRA L used only for k_proj; fallback to tira_L when unset')
 parser.add_argument('--tira_v_M', type=int, default=None, help='TIRA M used only for v_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_v_K', type=int, default=None, help='TIRA K used only for v_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_v_L', type=int, default=None, help='TIRA L used only for v_proj; fallback to tira_L when unset')
 parser.add_argument('--tira_o_M', type=int, default=None, help='TIRA M used only for o_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_o_K', type=int, default=None, help='TIRA K used only for o_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_o_L', type=int, default=None, help='TIRA L used only for o_proj; fallback to tira_L when unset')
 parser.add_argument('--tira_up_M', type=int, default=None, help='TIRA M used only for up_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_up_K', type=int, default=None, help='TIRA K used only for up_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_up_L', type=int, default=None, help='TIRA L used only for up_proj; fallback to tira_L when unset')
 parser.add_argument('--tira_down_M', type=int, default=None, help='TIRA M used only for down_proj; fallback to tira_M when unset')
-parser.add_argument('--tira_down_K', type=int, default=None, help='TIRA K used only for down_proj; fallback to tira_K when unset')
+parser.add_argument('--tira_down_L', type=int, default=None, help='TIRA L used only for down_proj; fallback to tira_L when unset')
 COMPUTE_DS_LENGTH = False
 args = parser.parse_args()
 if args.compute_rank or args.compute_norm:
@@ -139,34 +139,48 @@ if args.ckpt is not None and not args.resume:
         # restore TIRA parameters if present
         if 'tira_M' in dict_args:
             args.tira_M = dict_args['tira_M']
-        if 'tira_K' in dict_args:
-            args.tira_K = dict_args['tira_K']
+        if 'tira_L' in dict_args:
+            args.tira_L = dict_args['tira_L']
+        elif 'tira_K' in dict_args:
+            args.tira_L = max(1, int(dict_args['tira_K']) // args.tira_M)
         if 'tira_alpha' in dict_args:
             args.tira_alpha = dict_args['tira_alpha']
         if 'tira_q_M' in dict_args:
             args.tira_q_M = dict_args['tira_q_M']
-        if 'tira_q_K' in dict_args:
-            args.tira_q_K = dict_args['tira_q_K']
+        if 'tira_q_L' in dict_args:
+            args.tira_q_L = dict_args['tira_q_L']
+        elif 'tira_q_K' in dict_args:
+            args.tira_q_L = max(1, int(dict_args['tira_q_K']) // (args.tira_q_M or args.tira_M))
         if 'tira_k_M' in dict_args:
             args.tira_k_M = dict_args['tira_k_M']
-        if 'tira_k_K' in dict_args:
-            args.tira_k_K = dict_args['tira_k_K']
+        if 'tira_k_L' in dict_args:
+            args.tira_k_L = dict_args['tira_k_L']
+        elif 'tira_k_K' in dict_args:
+            args.tira_k_L = max(1, int(dict_args['tira_k_K']) // (args.tira_k_M or args.tira_M))
         if 'tira_v_M' in dict_args:
             args.tira_v_M = dict_args['tira_v_M']
-        if 'tira_v_K' in dict_args:
-            args.tira_v_K = dict_args['tira_v_K']
+        if 'tira_v_L' in dict_args:
+            args.tira_v_L = dict_args['tira_v_L']
+        elif 'tira_v_K' in dict_args:
+            args.tira_v_L = max(1, int(dict_args['tira_v_K']) // (args.tira_v_M or args.tira_M))
         if 'tira_o_M' in dict_args:
             args.tira_o_M = dict_args['tira_o_M']
-        if 'tira_o_K' in dict_args:
-            args.tira_o_K = dict_args['tira_o_K']
+        if 'tira_o_L' in dict_args:
+            args.tira_o_L = dict_args['tira_o_L']
+        elif 'tira_o_K' in dict_args:
+            args.tira_o_L = max(1, int(dict_args['tira_o_K']) // (args.tira_o_M or args.tira_M))
         if 'tira_up_M' in dict_args:
             args.tira_up_M = dict_args['tira_up_M']
-        if 'tira_up_K' in dict_args:
-            args.tira_up_K = dict_args['tira_up_K']
+        if 'tira_up_L' in dict_args:
+            args.tira_up_L = dict_args['tira_up_L']
+        elif 'tira_up_K' in dict_args:
+            args.tira_up_L = max(1, int(dict_args['tira_up_K']) // (args.tira_up_M or args.tira_M))
         if 'tira_down_M' in dict_args:
             args.tira_down_M = dict_args['tira_down_M']
-        if 'tira_down_K' in dict_args:
-            args.tira_down_K = dict_args['tira_down_K']
+        if 'tira_down_L' in dict_args:
+            args.tira_down_L = dict_args['tira_down_L']
+        elif 'tira_down_K' in dict_args:
+            args.tira_down_L = max(1, int(dict_args['tira_down_K']) // (args.tira_down_M or args.tira_M))
     else:
         print(f'WARNING: cannot find {output_jsonl}, using command-line args instead.')
 
@@ -197,7 +211,7 @@ if peft_type == 'hira':
     exp_name = exp_name + f'init={init_ab_}-'
     exp_name = exp_name + f'train={train_ab}-'
 elif peft_type in TIRA_PEFT_TYPES:
-    exp_name = exp_name + f'M={args.tira_M}-K={args.tira_K}-'
+    exp_name = exp_name + f'M={args.tira_M}-L={args.tira_L}-'
 elif peft_type == 'lora':
     exp_name = exp_name + f'r={args.lora_r}-'
 
@@ -256,40 +270,40 @@ elif peft_type == 'tira':
                                                       model_name=model_name, enable_checkpoint=args.enable_grad_ckpt,
                                                       target_modules=args.target_modules,
                                                       tira_M=args.tira_M,
-                                                      tira_K=args.tira_K,
+                                                      tira_L=args.tira_L,
                                                       tira_alpha=args.tira_alpha,
                                                       tira_q_M=args.tira_q_M,
-                                                      tira_q_K=args.tira_q_K,
+                                                      tira_q_L=args.tira_q_L,
                                                       tira_k_M=args.tira_k_M,
-                                                      tira_k_K=args.tira_k_K,
+                                                      tira_k_L=args.tira_k_L,
                                                       tira_v_M=args.tira_v_M,
-                                                      tira_v_K=args.tira_v_K,
+                                                      tira_v_L=args.tira_v_L,
                                                       tira_o_M=args.tira_o_M,
-                                                      tira_o_K=args.tira_o_K,
+                                                      tira_o_L=args.tira_o_L,
                                                       tira_up_M=args.tira_up_M,
-                                                      tira_up_K=args.tira_up_K,
+                                                      tira_up_L=args.tira_up_L,
                                                       tira_down_M=args.tira_down_M,
-                                                      tira_down_K=args.tira_down_K)
+                                                      tira_down_L=args.tira_down_L)
 elif peft_type in TIRA_PEFT_TYPES:
     model, tokenizer, model_config = get_tira_ablation_models(load_bit=args.load_bit,
                                                               model_name=model_name,
                                                               enable_checkpoint=args.enable_grad_ckpt,
                                                               target_modules=args.target_modules,
                                                               tira_M=args.tira_M,
-                                                              tira_K=args.tira_K,
+                                                              tira_L=args.tira_L,
                                                               tira_alpha=args.tira_alpha,
                                                               tira_q_M=args.tira_q_M,
-                                                              tira_q_K=args.tira_q_K,
+                                                              tira_q_L=args.tira_q_L,
                                                               tira_k_M=args.tira_k_M,
-                                                              tira_k_K=args.tira_k_K,
+                                                              tira_k_L=args.tira_k_L,
                                                               tira_v_M=args.tira_v_M,
-                                                              tira_v_K=args.tira_v_K,
+                                                              tira_v_L=args.tira_v_L,
                                                               tira_o_M=args.tira_o_M,
-                                                              tira_o_K=args.tira_o_K,
+                                                              tira_o_L=args.tira_o_L,
                                                               tira_up_M=args.tira_up_M,
-                                                              tira_up_K=args.tira_up_K,
+                                                              tira_up_L=args.tira_up_L,
                                                               tira_down_M=args.tira_down_M,
-                                                              tira_down_K=args.tira_down_K,
+                                                              tira_down_L=args.tira_down_L,
                                                               peft_type=peft_type)
 elif peft_type == 'lora':
     model, tokenizer, model_config = get_lora_models(load_bit=args.load_bit,
