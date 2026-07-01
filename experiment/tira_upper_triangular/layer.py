@@ -34,7 +34,7 @@ class TiraUpperTriangularLayer:
         device = self.weight.device
         dtype = self.weight.dtype
 
-        row_idx, col_idx = self._build_indices(M)
+        offset_idx, row_idx, col_idx, dense_col_idx, a_row_idx, a_input_mask, offset_all = self._build_indices(M)
         num_blocks = row_idx.numel()
         a_param = nn.Parameter(torch.empty(num_blocks, L, n_in, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(a_param, a=math.sqrt(5))
@@ -43,22 +43,58 @@ class TiraUpperTriangularLayer:
             adapter_name: nn.Parameter(torch.zeros(num_blocks, L, n_out, device=device, dtype=dtype))
         }))
 
+        offset_buf = f"_tira_offset_idx_{adapter_name}"
         row_buf = f"_tira_row_idx_{adapter_name}"
         col_buf = f"_tira_col_idx_{adapter_name}"
+        dense_col_buf = f"_tira_dense_col_idx_{adapter_name}"
+        arow_buf = f"_tira_a_row_idx_{adapter_name}"
+        amask_buf = f"_tira_a_input_mask_{adapter_name}"
+        offset_all_buf = f"_tira_offset_all_{adapter_name}"
+        self.register_buffer(offset_buf, offset_idx)
         self.register_buffer(row_buf, row_idx)
         self.register_buffer(col_buf, col_idx)
-        self._tira_buf_names[adapter_name] = (row_buf, col_buf)
+        self.register_buffer(dense_col_buf, dense_col_idx)
+        self.register_buffer(arow_buf, a_row_idx)
+        self.register_buffer(amask_buf, a_input_mask)
+        self.register_buffer(offset_all_buf, offset_all)
+        self._tira_buf_names[adapter_name] = (
+            offset_buf,
+            row_buf,
+            col_buf,
+            dense_col_buf,
+            arow_buf,
+            amask_buf,
+            offset_all_buf,
+        )
         self.to(self.weight.device)
 
     @staticmethod
     def _build_indices(M: int):
+        offsets = []
         rows = []
         cols = []
+        dense_col_idx = torch.zeros(M, M, dtype=torch.long)
+        a_row_idx = torch.zeros(M, M, dtype=torch.long)
+        a_input_mask = torch.zeros(M, M, dtype=torch.bool)
         for offset in range(M):
             for row in range(M - offset):
+                offsets.append(offset)
                 rows.append(row)
-                cols.append(row + offset)
-        return torch.tensor(rows, dtype=torch.long), torch.tensor(cols, dtype=torch.long)
+                col = row + offset
+                cols.append(col)
+                dense_col_idx[offset, row] = col
+            for input_col in range(offset, M):
+                a_row_idx[offset, input_col] = input_col - offset
+                a_input_mask[offset, input_col] = True
+        return (
+            torch.tensor(offsets, dtype=torch.long),
+            torch.tensor(rows, dtype=torch.long),
+            torch.tensor(cols, dtype=torch.long),
+            dense_col_idx,
+            a_row_idx,
+            a_input_mask,
+            torch.arange(M, dtype=torch.long),
+        )
 
     @torch.no_grad()
     def delta_weight(self, adapter_name: str = None) -> torch.Tensor:
@@ -70,7 +106,7 @@ class TiraUpperTriangularLayer:
         a = self.tira_a[adapter_name]
         n_out = b.shape[2]
         n_in = a.shape[2]
-        row_buf, col_buf = self._tira_buf_names[adapter_name]
+        _, row_buf, col_buf, _, _, _, _ = self._tira_buf_names[adapter_name]
         row_idx = getattr(self, row_buf)
         col_idx = getattr(self, col_buf)
 
@@ -123,18 +159,45 @@ class TiraUpperTriangularLinear(nn.Linear, TiraUpperTriangularLayer):
             self._cached_delta = None
             self.merged = False
 
-    def _adapter_forward(self, x_flat, b, a, row_idx, col_idx, M):
+    def _adapter_forward(
+        self,
+        x_flat,
+        b,
+        a,
+        offset_idx,
+        row_idx,
+        dense_col_idx,
+        a_row_idx,
+        a_input_mask,
+        offset_all,
+        M,
+    ):
+        L = a.shape[1]
         n_in = a.shape[2]
         n_out = b.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
-        selected = x_blocks.index_select(1, col_idx)
+        batch_size = x_blocks.shape[0]
+
+        dense_a = a.new_zeros(M, M, L, n_in)
+        dense_b = b.new_zeros(M, M, L, n_out)
+        dense_a.index_put_((offset_idx, row_idx), a, accumulate=False)
+        dense_b.index_put_((offset_idx, row_idx), b, accumulate=False)
+
+        a_aligned = dense_a[offset_all[:, None], a_row_idx]
+        a_aligned = a_aligned * a_input_mask.to(a.dtype).unsqueeze(-1).unsqueeze(-1)
+        a_flat = a_aligned.permute(1, 3, 0, 2).reshape(M, n_in, M * L)
         act = torch.bmm(
-            selected.permute(1, 0, 2),
-            a.permute(0, 2, 1),
-        )
-        contrib = torch.bmm(act, b).permute(1, 0, 2)
-        y_blocks = contrib.new_zeros(x_blocks.shape[0], M, n_out)
-        y_blocks.index_add_(1, row_idx, contrib)
+            x_blocks.permute(1, 0, 2),
+            a_flat,
+        ).permute(1, 0, 2).reshape(batch_size, M, M, L)
+
+        act_by_offset = act.permute(0, 2, 1, 3)
+        gather_idx = dense_col_idx.unsqueeze(0).unsqueeze(-1).expand(batch_size, M, M, L)
+        act_shifted = torch.gather(act_by_offset, 2, gather_idx)
+
+        act_flat = act_shifted.permute(2, 0, 1, 3).reshape(M, batch_size, M * L)
+        b_flat = dense_b.permute(1, 0, 2, 3).reshape(M, M * L, n_out)
+        y_blocks = torch.bmm(act_flat, b_flat).permute(1, 0, 2)
         return y_blocks.reshape(-1, self.out_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -153,12 +216,27 @@ class TiraUpperTriangularLinear(nn.Linear, TiraUpperTriangularLayer):
             L = self.tira_L[adapter_name]
             b = self.tira_b[adapter_name]
             a = self.tira_a[adapter_name]
-            row_buf, col_buf = self._tira_buf_names[adapter_name]
+            offset_buf, row_buf, _col_buf, dense_col_buf, arow_buf, amask_buf, offset_all_buf = self._tira_buf_names[adapter_name]
+            offset_idx = getattr(self, offset_buf)
             row_idx = getattr(self, row_buf)
-            col_idx = getattr(self, col_buf)
+            dense_col_idx = getattr(self, dense_col_buf)
+            a_row_idx = getattr(self, arow_buf)
+            a_input_mask = getattr(self, amask_buf)
+            offset_all = getattr(self, offset_all_buf)
             orig_shape = x.shape
             x_flat = x.reshape(-1, self.in_features).to(b.dtype)
-            y_delta = self._adapter_forward(x_flat, b, a, row_idx, col_idx, M)
+            y_delta = self._adapter_forward(
+                x_flat,
+                b,
+                a,
+                offset_idx,
+                row_idx,
+                dense_col_idx,
+                a_row_idx,
+                a_input_mask,
+                offset_all,
+                M,
+            )
             scale = self.tira_alpha[adapter_name] / (L * M)
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
         return result
