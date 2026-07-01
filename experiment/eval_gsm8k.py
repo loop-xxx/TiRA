@@ -117,12 +117,24 @@ def compute_accuracy(jsonl_path, answer_json):
     if len(contents) != len(answer_json):
         print(f'Warning: pred count {len(contents)} != gt count {len(answer_json)} for {jsonl_path}')
     correct = []
+    last_correct = []
+    prompt_correct = []
     for _answer, content in zip(answer_json, contents):
         pred_num = extract_last_answer_number(content['pred'])
         prompt_pred_num = extract_answer_number(content['pred'])
         ans_num = float(_answer['output'].split('####')[-1].strip().replace(',', ''))
-        correct.append(pred_num == ans_num or prompt_pred_num == ans_num)
-    return float(np.asarray(correct).mean()) if correct else 0.0
+        is_last_correct = pred_num == ans_num
+        is_prompt_correct = prompt_pred_num == ans_num
+        last_correct.append(is_last_correct)
+        prompt_correct.append(is_prompt_correct)
+        correct.append(is_last_correct or is_prompt_correct)
+    if not correct:
+        return 0.0, 0.0, 0.0
+    return (
+        float(np.asarray(correct).mean()),
+        float(np.asarray(last_correct).mean()),
+        float(np.asarray(prompt_correct).mean()),
+    )
 
 
 eval_paths = glob('<fill your result dir here>')
@@ -140,7 +152,7 @@ for eval_path in eval_paths:
         print(f'No trainer_state.json files found in {eval_path} for task {eval_task}')
         continue
 
-    csv_header = ['peft', 'r', 'eval_loss', 'acc']
+    csv_header = ['peft', 'r', 'eval_loss', 'acc', 'last_acc', 'prompt_acc']
     csv_data = []
 
     for json_file in tqdm(jsonl_files):
@@ -153,12 +165,17 @@ for eval_path in eval_paths:
         run_dir = os.path.dirname(os.path.dirname(json_file))
         pred_jsonls = glob(f'{run_dir}/*.jsonl')
         if pred_jsonls:
-            acc = compute_accuracy(pred_jsonls[0], answer_json) * 100.0
+            acc, last_acc, prompt_acc = compute_accuracy(pred_jsonls[0], answer_json)
+            acc *= 100.0
+            last_acc *= 100.0
+            prompt_acc *= 100.0
         else:
             print(f'No prediction jsonl found in {run_dir}')
             acc = ''
+            last_acc = ''
+            prompt_acc = ''
 
-        csv_row = [peft_type, r_value, data['best_metric'], acc]
+        csv_row = [peft_type, r_value, data['best_metric'], acc, last_acc, prompt_acc]
         csv_data.append(csv_row)
 
     out_csv = f'{eval_path}/results_{eval_task}.csv'
