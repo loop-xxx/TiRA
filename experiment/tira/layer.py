@@ -56,9 +56,14 @@ class TiraLayer:
         offset_idx = torch.arange(M)
         row_idx = torch.arange(M)
         col_idx = (row_idx.unsqueeze(0) + offset_idx.unsqueeze(1)) % M
+        a_row_idx = (row_idx.unsqueeze(0) - offset_idx.unsqueeze(1)) % M
         col_buf = f"_tira_col_idx_{adapter_name}"
+        arow_buf = f"_tira_a_row_idx_{adapter_name}"
+        offset_buf = f"_tira_offset_idx_{adapter_name}"
         self.register_buffer(col_buf, col_idx)
-        self._tira_buf_names[adapter_name] = col_buf
+        self.register_buffer(arow_buf, a_row_idx)
+        self.register_buffer(offset_buf, offset_idx)
+        self._tira_buf_names[adapter_name] = (col_buf, arow_buf, offset_buf)
         self.to(self.weight.device)
 
     @torch.no_grad()
@@ -75,7 +80,8 @@ class TiraLayer:
         blocks_all = torch.einsum("kmlo,kmli->kmoi", b, a)
         delta_blocks = torch.zeros(M, M, n_out, n_in, dtype=b.dtype, device=b.device)
         rows = torch.arange(M, device=b.device).unsqueeze(0).expand(M, M)
-        col_idx = getattr(self, self._tira_buf_names[adapter_name])
+        col_buf, _, _ = self._tira_buf_names[adapter_name]
+        col_idx = getattr(self, col_buf)
         delta_blocks.index_put_((rows, col_idx), blocks_all, accumulate=False)
         delta = delta_blocks.permute(0, 2, 1, 3).reshape(self.out_features, self.in_features)
         return delta * (self.tira_alpha[adapter_name] / (L * M))
@@ -123,15 +129,27 @@ class TiraLinear(nn.Linear, TiraLayer):
             self._cached_delta = None
             self.merged = False
 
-    def _adapter_forward(self, x_flat, b, a, col_idx, M):
+    def _adapter_forward(self, x_flat, b, a, col_idx, a_row_idx, offset_idx, M):
+        L = a.shape[2]
         n_in = a.shape[3]
         n_out = b.shape[3]
         x_blocks = x_flat.reshape(-1, M, n_in)
-        y_blocks = x_blocks.new_zeros(x_blocks.shape[0], M, n_out)
-        for offset in range(M):
-            selected = x_blocks.index_select(1, col_idx[offset])
-            act = torch.einsum("bmi,mli->bml", selected, a[offset])
-            y_blocks = y_blocks + torch.einsum("bml,mlo->bmo", act, b[offset])
+        batch_size = x_blocks.shape[0]
+
+        a_aligned = a[offset_idx[:, None], a_row_idx]
+        a_flat = a_aligned.permute(1, 3, 0, 2).reshape(M, n_in, M * L)
+        act = torch.bmm(
+            x_blocks.permute(1, 0, 2),
+            a_flat,
+        ).permute(1, 0, 2).reshape(batch_size, M, M, L)
+
+        act_by_offset = act.permute(0, 2, 1, 3)
+        gather_idx = col_idx.unsqueeze(0).unsqueeze(-1).expand(batch_size, M, M, L)
+        act_shifted = torch.gather(act_by_offset, 2, gather_idx)
+
+        act_flat = act_shifted.permute(2, 0, 1, 3).reshape(M, batch_size, M * L)
+        b_flat = b.permute(1, 0, 2, 3).reshape(M, M * L, n_out)
+        y_blocks = torch.bmm(act_flat, b_flat).permute(1, 0, 2)
         return y_blocks.reshape(-1, self.out_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -150,10 +168,13 @@ class TiraLinear(nn.Linear, TiraLayer):
             L = self.tira_L[adapter_name]
             b = self.tira_b[adapter_name]
             a = self.tira_a[adapter_name]
-            col_idx = getattr(self, self._tira_buf_names[adapter_name])
+            col_buf, arow_buf, offset_buf = self._tira_buf_names[adapter_name]
+            col_idx = getattr(self, col_buf)
+            a_row_idx = getattr(self, arow_buf)
+            offset_idx = getattr(self, offset_buf)
             orig_shape = x.shape
             x_flat = x.reshape(-1, self.in_features).to(b.dtype)
-            y_delta = self._adapter_forward(x_flat, b, a, col_idx, M)
+            y_delta = self._adapter_forward(x_flat, b, a, col_idx, a_row_idx, offset_idx, M)
             scale = self.tira_alpha[adapter_name] / (L * M)
             result = result + (y_delta * scale).to(previous_dtype).reshape(*orig_shape[:-1], -1)
         return result

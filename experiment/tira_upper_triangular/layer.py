@@ -128,8 +128,11 @@ class TiraUpperTriangularLinear(nn.Linear, TiraUpperTriangularLayer):
         n_out = b.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
         selected = x_blocks.index_select(1, col_idx)
-        act = torch.einsum("bpi,pli->bpl", selected, a)
-        contrib = torch.einsum("bpl,plo->bpo", act, b)
+        act = torch.bmm(
+            selected.permute(1, 0, 2),
+            a.permute(0, 2, 1),
+        )
+        contrib = torch.bmm(act, b).permute(1, 0, 2)
         y_blocks = contrib.new_zeros(x_blocks.shape[0], M, n_out)
         y_blocks.index_add_(1, row_idx, contrib)
         return y_blocks.reshape(-1, self.out_features)

@@ -122,8 +122,14 @@ class TiraDiagonalLinear(nn.Linear, TiraDiagonalLayer):
     ) -> torch.Tensor:
         n_in = a.shape[2]
         x_blocks = x_flat.reshape(-1, M, n_in)
-        act = torch.einsum("bmi,mli->bml", x_blocks, a)
-        y_delta = torch.einsum("bml,mlo->bmo", act, b)
+        act = torch.bmm(
+            x_blocks.permute(1, 0, 2),
+            a.permute(0, 2, 1),
+        )
+        y_delta = torch.bmm(
+            act,
+            b,
+        ).permute(1, 0, 2)
         return y_delta.reshape(-1, self.out_features)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
